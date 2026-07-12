@@ -7,7 +7,7 @@ AI Composer is a tool for generating verified implementations from documentation
 ## 🎯 Quick Navigation
 
 ### **New Users → Start Here**
-- **Want to extract and analyze counterexamples?** → See [CEX Analysis Tool](#-cex-extraction--analysis-tool)
+- **Want to extract and analyze counterexamples?** → See [CEX Extraction & Analysis Tool](#-cex-extraction--analysis-tool)
 - **Want to generate verified code?** → See [Full Installation](#full-installation--aicomposer)
 - **Want setup automation?** → See [Quick Start](#-quick-start-3-minutes)
 
@@ -532,7 +532,7 @@ For the original AI Composer (code generation from specs), see below:
 
 ### Requirements
 
-You will need at least Python 3.12, Docker (with compose), a Claude API key, and the ability to build the documentation (see [here](https://github.com/Certora/Documentation/?tab=readme-ov-file#building-the-documentation)), and a working, local installation of the prover (see [here](https://github.com/certora/certoraprover)). The Claude API Key should be in your environment under `ANTHROPIC_API_KEY`. You will also need a suitably recent version of `uv`.
+You will need at least Python 3.12, Docker (with compose), a Claude API key, and the ability to build the documentation (see [here](https://github.com/Certora/Documentation/?tab=readme-ov-file#building-locally-with-docker)).
 
 ### One-time DB setup
 
@@ -557,7 +557,7 @@ The sanity analyzer requires additional prover documentation beyond the CVL manu
 1. Run `./gen_docs.sh` (if not already done for the base RAG setup)
 2. Run `./populate_extended_rag.sh` to populate the `extended_rag_db`
 
-**Note:** The cex-analyzer and AI Composer use the standard `rag_db` (CVL-only), while sanity-analyzer defaults to `extended_rag_db` (CVL + prover docs). You can override this with the `--rag-db` [...]
+**Note:** The cex-analyzer and AI Composer use the standard `rag_db` (CVL-only), while sanity-analyzer defaults to `extended_rag_db` (CVL + prover docs). You can override this with the `--rag-db` flag.
 
 ### Updating the RAG
 
@@ -633,7 +633,7 @@ A few options can help tweak your experience:
 
 ### Resuming Workflows
 
-The `--thread-id` and `--checkpoint-id` options allow you to resume AI Composer execution from a specific point in time. Together, these identifiers describe a checkpoint in the execution history[...]
+The `--thread-id` and `--checkpoint-id` options allow you to resume AI Composer execution from a specific point in time. Together, these identifiers describe a checkpoint in the execution history.
 
 **Thread ID**: Identifies a specific execution session of AI Composer. This is displayed early in the output when starting a workflow:
 
