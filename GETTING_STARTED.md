@@ -1,384 +1,208 @@
-# Certora AIComposer — Getting Started
+# Getting Started — The Complete Checklist
 
-> **Single entry point** for new and returning users. Three levels of depth — start at Level 1 and go deeper as needed.
->
-> **Key insight**: The highest-value findings in modern audits ($10k-$50k+) come from **business logic bugs** — broken invariants around asset conservation, solvency, share price integrity, and state machine correctness — not reentrancy or overflow bugs that static analyzers already catch. See [USER_GUIDE.md](./USER_GUIDE.md) for the full 10-category framework.
+One ordered, verifiable path from a clean machine to a working install. Every other doc in this repo (`README.md`, `AUTOPROVE.md`, `SETUP_GUIDE.md`, `CEX_AND_REQUIREMENTS_GUIDE.md`) explains a piece of this in more depth — this file's job is just to make sure you do the pieces **in order** and **check each one** before moving to the next, so nothing silently doesn't work three steps later.
 
----
+There are two tracks. Pick based on what you actually need:
 
-## Level 1: Run Your First Audit (5 minutes)
+- **Track A — CEX tool only.** Extract and explain Prover counterexamples with Claude. No Docker, no databases, no Prover build. ~5 minutes.
+- **Track B — Full install.** Everything in Track A, plus AutoProve (auto-generate & verify CVL specs), AI Composer (generate implementations from specs), Foundry test generation, and the Sanity Analyzer. Needs Docker, a Postgres-backed RAG index, and either a local Prover build or Certora cloud access.
 
-### The One Command
-
-```bash
-console-autoprove . src/Contract.sol:ContractName design_doc.md --cloud
-```
-
-That's it. This will:
-1. Read your design document
-2. Extract 10-20 security & business logic properties
-3. Generate CVL specifications
-4. Run the Certora Prover
-5. Show you VERIFIED / FAILED / TIMEOUT / SKIPPED results
-
-**Time**: 5-15 minutes. **Result**: Properties extracted, CVL generated, tests run.
-
-### Prerequisite Check (90 seconds)
-
-```bash
-python3 --version                        # Need 3.12+
-echo $ANTHROPIC_API_KEY                 # Must be set
-echo $CERTORAKEY                         # For cloud mode
-docker ps | grep postgres               # DB should be running
-```
-
-If anything fails, see [README.md](./README.md) for full installation.
-
-### What the Results Mean
-
-| Result | Meaning | Action |
-|--------|---------|--------|
-| ✅ **VERIFIED** | Property holds, no bug | OK |
-| ❌ **FAILED** | Counterexample found! | **INVESTIGATE!** |
-| ⏱ **TIMEOUT** | Too complex to verify | Simplify property |
-| ⊘ **SKIPPED** | Not formalizable | May indicate false negative |
+Track B *includes* everything Track A gives you — you don't need to do both.
 
 ---
 
-## Level 2: Understand the Pipeline (15 minutes)
+## Track A — CEX Extraction & Analysis Only
 
-### System Architecture
+- [ ] **1. Python 3.9+ and an Anthropic API key.** Get a key at [console.anthropic.com](https://console.anthropic.com/account/keys).
 
-```
-Input: Design Document + Solidity Contract
-                    │
-    ┌───────────────┼───────────────┐
-    │               │               │
-    ▼               ▼               ▼
-Phase 0-1:      Phase 2-3:      Phase 4-5:
-System          Setup &         Properties
-Analysis        Summaries       & CVL Gen
-    │               │               │
-    └───────────────┼───────────────┘
-                    ▼
-            Prover Verification
-            • VERIFIED ✓
-            • FAILED ✗ (potential bugs!)
-            • TIMEOUT ⏱
-            • SKIPPED ⊘
-```
+- [ ] **2. Download and run the setup script.**
+  ```bash
+  curl -o setup_certora_tools.sh \
+    https://raw.githubusercontent.com/0xbrett8571/CertoraAIComposer/master/setup_certora_tools.sh
+  chmod +x setup_certora_tools.sh
+  ./setup_certora_tools.sh
+  ```
+  Enter your API key when prompted. This creates `~/certora-tools` (isolated venv), installs `anthropic`/`python-dotenv`, copies in `extract_and_analyze_cex.py`, and adds shell aliases.
 
-### The Two Workflows
+- [ ] **3. Reload your shell.**
+  ```bash
+  source ~/.bashrc   # or ~/.zshrc
+  ```
 
-AIComposer has **two complementary subsystems**:
+- [ ] **4. Verify.**
+  ```bash
+  certora-verify
+  ```
+  Should print your tools home, python env, tool path, and a masked API key. If it doesn't, see the troubleshooting table in [`QUICK_REFERENCE.md`](QUICK_REFERENCE.md).
 
-| System | Direction | Input | Output |
-|--------|-----------|-------|--------|
-| **Auto-Prove** | Code → Specs | Source code + design doc | CVL specs + prover results |
-| **AIComposer (Codegen)** | Specs → Code | CVL spec + interface + system doc | Solidity implementation |
-
-**Auto-Prove** is what you use for bug hunting. **Codegen** is for synthesizing verified implementations.
-
-### Auto-Prove Pipeline Phases
-
-```
-Phase 0: System Analysis — LLM identifies components, contracts, external actors
-Phase 1: Harness Setup — AutoSetup classifies external contracts, generates config
-Phase 2: Custom Summaries — CVL summaries for ERC20s and external interfaces
-Phase 3: Structural Invariants — System-wide invariants (e.g., total supply)
-Phase 4: Property Extraction — Per-component, multi-round property discovery
-Phase 5: CVL Generation — Formalize properties, judge review, prover feedback loop
-```
-
-### Property Types
-
-| Type | Example | CVL |
-|------|---------|-----|
-| **Invariant** | "Sum of balances = total supply" | `invariant` keyword, always true |
-| **Safety Property** | "Deposit increases balance" | `rule` keyword, expected behavior |
-| **Attack Vector** | "Oracle can't manipulate price >5%" | `rule` with adversarial assumptions |
-
-### Multi-Round Convergence
-
-```
-Round 1: Broad sweep → 10-15 properties
-Round 2: New angles → 3-5 new properties (no duplication)
-Round 3: Convergence → Empty output = done!
-```
-
-Empty Round 3 is **good** — it means you've exhaustively found all properties for that component.
+- [ ] **5. Smoke-test against a real Prover run.** Run your Prover job with `--output_dir` pointed somewhere local, then:
+  ```bash
+  cex-list ./prover_results
+  ```
+  If you see a rule table (even with zero VIOLATED rules), you're done — **Track A complete.**
 
 ---
 
-## Level 3: Write Effective Design Documents (30 minutes)
+## Track B — Full Install
 
-### Why This Matters (The 80% Rule)
+Everything below is additive on top of a normal clone; do it in this order, since later steps depend on earlier ones (e.g. `uv sync` will fail if `graphcore` isn't checked out yet).
 
-**Design document quality is 80% of success.** A vague doc produces generic properties and misses real bugs. A specific doc produces targeted properties that find real vulnerabilities.
+### B0. Prerequisites
 
-```
-EXCELLENT (5000+ words, detailed edges)  → 70-80% bug discovery rate
-GOOD (2000-3000 words, specifics)        → 40-50% bug discovery rate
-POOR (500-1000 words, generic)           → 10-20% bug discovery rate
-TERRIBLE (vague, incomplete)             → 0-5% useful findings
-```
+- [ ] Python **3.12+**
+- [ ] [`uv`](https://docs.astral.sh/uv/)
+- [ ] Docker with Compose
+- [ ] Anthropic API key
+- [ ] SSH access to `git@github.com:Certora/graphcore.git` (private Certora repo)
+- [ ] Either: a local build of the [Certora Prover](https://github.com/Certora/CertoraProver), **or** a `CERTORAKEY` for cloud mode
+- [ ] Solidity compiler(s) on `$PATH`, named `solcX.Y` (e.g. `solc8.29` for 0.8.29)
+- [ ] *(AutoProve only)* access to Certora's private `AutoSetup` repo
 
-### The Auditor Mindset
+### B1. Clone with submodules
 
-When writing your design document, don't just describe what the contract does. **Hunt for impact.** For every guarantee, ask:
+- [ ] ```bash
+  git clone --recurse-submodules https://github.com/0xbrett8571/CertoraAIComposer.git
+  cd CertoraAIComposer
+  ```
+  Already cloned without `--recurse-submodules`? Fix it in place instead of re-cloning:
+  ```bash
+  git submodule update --init
+  ```
+- [ ] **Verify:** `ls graphcore` should show real files, not an empty directory.
 
-> *"If this invariant breaks, can someone **steal money, print money, freeze money, or brick the protocol**?"*
+### B2. Provision the databases
 
-These answers become your highest-value properties. The most severe modern DeFi exploits come from broken business logic invariants — not reentrancy or overflow bugs that static analyzers already catch.
+- [ ] ```bash
+  cd scripts/
+  docker compose create && docker compose start
+  cd ..
+  ```
+- [ ] **Verify the container is healthy:**
+  ```bash
+  docker compose -f scripts/docker-compose.yml ps
+  ```
+  Status should show `healthy`, not `starting` or `unhealthy`.
+- [ ] **Verify the databases actually got created** (via `init-db.sql`, run automatically on first start):
+  ```bash
+  docker exec -it composer_db-postgres-1 psql -U postgres -c "\l" | grep -E "rag_db|audit_db|langgraph_store_db|langgraph_checkpoint_db|memory_tool_db"
+  ```
+  You should see all five. If the container was already running from a previous partial setup and these are missing, remove the volume and recreate: `docker compose down -v && docker compose create && docker compose start`.
+- [ ] ⚠️ No attempt has been made to secure this database — local dev only. Restart it after every host reboot (or set a `restart` policy in `docker-compose.yml` — it's currently `unless-stopped`, which should survive most cases, but confirm with `docker ps` after a reboot).
 
-### Design Document Template
+### B3. Build the RAG index
 
-```markdown
-# [Protocol Name] Design Document
+- [ ] ```bash
+  ./gen_docs.sh          # builds the CVL manual HTML into prover-docs/
+  ./populate_rag.sh       # populates rag_db — used by AutoProve, AI Composer, cex-analyzer
+  ```
+- [ ] *(Only if you'll use the Sanity Analyzer)*
+  ```bash
+  ./populate_extended_rag.sh   # populates extended_rag_db — CVL + Prover docs
+  ```
+- [ ] **Verify:**
+  ```bash
+  docker exec -it composer_db-postgres-1 psql -U rag_user -d rag_db -c "SELECT count(*) FROM rag.langchain_pg_embedding;"
+  ```
+  (Password is `rag_password`, from `composer/scripts/init-db.sql` — table name may differ slightly by embedding-store version; if this exact query errors, `\dt rag.*` first to see what's actually there.) A non-zero count means the RAG index is populated.
+- [ ] Documentation changes later? Don't repeat all of the above by hand — use `./refresh_rag.sh` (see its `--help` for `--all` / `--skip-gen-docs`). Run it offline; it wipes before rebuilding.
 
-## 1. System Overview
-[2-3 sentences: What is this protocol? What does it do?]
+### B4. Get a Certora Prover
 
-## 2. Components
-### Component: [Name]
-- Purpose: [What does it do?]
-- Functions: [list key functions]
-- State: [list state variables]
-- External Dependencies: [oracle, tokens, etc.]
-- Risk Areas: [What could go wrong?]
-[Repeat for each component]
+Pick one:
 
-## 3. Stated Guarantees (with Impact)
-For each guarantee, state what happens if it breaks:
+- [ ] **Local mode:** from the root of your Certora Prover repo clone, run `./gradlew copy-assets`, then set:
+  ```bash
+  export CERTORA=/path/to/CertoraProver/target
+  ```
+- [ ] **Cloud mode:** just set `CERTORAKEY` — no local build needed. AutoProve supports this via `--cloud`.
+- [ ] **Verify:** `echo $CERTORA` (local) or `echo $CERTORAKEY` (cloud) prints something non-empty.
 
-"LP tokens are always redeemable for proportional share"
-  → IMPACT IF VIOLATED: Share dilution → depositor funds stolen (CRITICAL)
+### B5. Solidity compilers
 
-"Fees are collected correctly and never lost"
-  → IMPACT IF VIOLATED: Fee theft → protocol revenue loss (CRITICAL)
+- [ ] Install whatever `solc` versions your target projects need, named `solcX.Y` on `$PATH` (e.g. `solc8.29` → Solidity `0.8.29`).
+- [ ] **Verify:** `which solc8.29` (or whatever version you need) resolves.
 
-"Only owner can pause the protocol"
-  → IMPACT IF VIOLATED: Unauthorized pause → funds frozen (HIGH)
+### B6. Install Python dependencies
 
-## 4. Properties (Claim → Property Format)
-For each business logic category, state the claim, then the property:
+- [ ] Choose **exactly one** `certora-cli` extra (they're mutually exclusive — the build will fail if you pick more than one):
+  ```bash
+  uv sync --extra ml --extra certora-cli          # stable channel (recommended default)
+  # or: --extra certora-cli-beta / --extra certora-cli-beta-mirror
+  ```
+- [ ] *(Only if you're in your own venv instead of `uv`'s managed one)* also install the certora-cli requirements from the Prover repo, and remember to activate this environment every time:
+  ```bash
+  uv pip install -r certora_cli_requirements.txt   # run from CertoraProver/scripts
+  ```
+- [ ] **Verify:** `uv run python -c "import composer, analyzer, sanity_analyzer; print('imports OK')"`
 
-### Asset Conservation
-CLAIM: Assets cannot be created from nothing.
-PROPERTY: Total assets accounted for must never exceed actual assets held.
-PROPERTY: A user cannot increase their claim without providing equivalent value.
+### B7. Install the console scripts
 
-### Solvency
-CLAIM: Protocol remains fully collateralized.
-PROPERTY: Total liabilities must never exceed total assets.
-PROPERTY: A user cannot borrow more than allowed collateral.
+- [ ] ```bash
+  uv tool install '.[ml,certora-cli]'
+  ```
+  > ⚠️ **`AUTOPROVE.md` documents this as `uv tool install '.[ml,certora-cli,pou]'`.** The `pou` extra (needed by the AutoSetup-backed auto-setup component) is **not currently defined in `pyproject.toml`** — that install command will fail as written. If you only need AI Composer, the CEX tools, Foundry generation, or the Sanity Analyzer, omit `pou` (as above) — none of those depend on it. If you specifically need **AutoProve**, you'll need `AUTOSETUP_PATH` set to a working `AutoSetup` checkout regardless (see B8) and may need to resolve the missing `pou` extra with whoever maintains that dependency internally before `tui-autoprove`/`console-autoprove` will run cleanly.
+- [ ] **Verify each command resolves** (doesn't need to succeed yet, just be found):
+  ```bash
+  which cex-analyzer sanity-analyzer ap-trail console-foundry tui-foundry \
+        console-autoprove tui-autoprove tui-natspec cache-natspec autoprove-report-render
+  ```
+  All ten should print a path. If any are missing, re-run `uv tool install` — as of this revision, all ten are registered in `[project.scripts]`.
 
-### Share Price Integrity
-CLAIM: Share value cannot be artificially inflated.
-PROPERTY: External transfers must not artificially inflate share value.
-PROPERTY: Share issuance must be proportional to assets deposited.
+### B8. *(AutoProve only)* AutoSetup
 
-[Continue for all 10 categories — see USER_GUIDE.md for the full list]
+- [ ] Clone Certora's private `AutoSetup` repo, then:
+  ```bash
+  export AUTOSETUP_PATH=/path/to/autosetup
+  ```
+- [ ] AutoProve will fail at import time if this isn't set — this only applies to `tui-autoprove`/`console-autoprove`, nothing else.
 
-## 5. Edge Cases & State Transitions
-- Boundary conditions: What if reserve is 0? What if deposit is 1 wei?
-- State transitions: Pause→Resume safety, Emergency→Normal consistency
-- Reentrancy points: Where are external calls?
-- Oracle manipulation: Staleness, zero price, extreme values
+### B9. API key (same as Track A)
 
-## 6. Catastrophic Failure Scenarios
+- [ ] ```bash
+  export ANTHROPIC_API_KEY="sk-ant-..."
+  ```
 
-### CF-1: Theft of Reserved Funds
-Impact: Loss of beacon-chain deposit funds. CRITICAL.
-Must Never Happen: Owner withdrawal uses staged ETH.
-Affected: withdraw(), stage(), depositToBeaconChain()
+### B10. End-to-end smoke test
 
-### CF-2: Insolvency
-Impact: User claims exceed protocol assets. CRITICAL.
-Must Never Happen: Total liabilities > total assets.
-Affected: borrow(), deposit(), withdraw(), liquidate()
+Run each tool you actually plan to use against a trivial project — `examples/trivial` exists exactly for this:
 
-### CF-3: Share Inflation
-Impact: Attacker obtains disproportionate ownership. CRITICAL.
-Must Never Happen: Shares minted exceed value deposited.
-Affected: deposit(), mint(), convertToShares()
+- [ ] **CEX tools:** already covered by Track A above.
+- [ ] **Foundry generation:**
+  ```bash
+  console-foundry examples/trivial path/to/Contract.sol:ContractName
+  ```
+- [ ] **Sanity Analyzer:** point it at any `UnsatCoreTAC-*.txt` report file you have (needs `extended_rag_db` from B3).
+- [ ] **AutoProve** *(if B8 is done)*:
+  ```bash
+  console-autoprove examples/trivial path/to/Contract.sol:ContractName examples/trivial/system_doc_simple.txt
+  ```
+- [ ] **AI Composer core:** rough edges expected — check `composer/console/app.py` and [`TOOL_STATUS_AND_USAGE.md`](TOOL_STATUS_AND_USAGE.md), this workflow predates AutoProve and is being consolidated with it.
 
-### CF-4: Permanent Lockup
-Impact: Funds become unrecoverable. HIGH.
-Must Never Happen: All withdrawal paths become inaccessible.
-Affected: withdraw(), emergencyWithdraw(), pause()
-
-### CF-5: Unauthorized Control
-Impact: Attacker gains privileged authority. CRITICAL.
-Must Never Happen: Non-owner performs owner-only action.
-Affected: pause(), setFees(), upgradeTo()
-
-## 7. Assumptions & Limitations
-- What's out of scope
-- What we assume is safe
-```
-
-### Design Doc Quality Checklist
-
-Before running AIComposer, verify:
-- [ ] 2000+ words minimum
-- [ ] Each component has purpose, functions, state, risks
-- [ ] Every guarantee states its IMPACT IF VIOLATED
-- [ ] Properties written in Claim→Property format
-- [ ] At minimum: asset conservation, solvency, share price integrity, state machine, and access control categories addressed
-- [ ] Edge cases explicitly flagged
-- [ ] State transitions considered
-- [ ] Catastrophic Failure Scenarios use "Must Never Happen" + "Affected" format
-- [ ] Assumptions listed
-
----
-
-## 4 Common Scenarios
-
-### Scenario 1: Quick Bug Hunt
-```bash
-console-autoprove . src/C.sol:C design_doc.md --cloud
-```
-
-### Scenario 2: With Threat Model (Focus Attack Surface)
-```bash
-console-autoprove . src/C.sol:C design_doc.md --threat-model threat.md --cloud
-```
-
-### Scenario 3: Interactive Refinement
-```bash
-console-autoprove . src/C.sol:C design_doc.md --interactive --cloud
-```
-
-### Scenario 4: Multi-Pass (Multiple Attack Angles)
-```bash
-# Pass 1: Oracle attacks
-console-autoprove . src/C.sol:C design_doc.md --threat-model oracle_threat.md --cache-ns oracle --cloud
-# Pass 2: Access control
-console-autoprove . src/C.sol:C design_doc.md --threat-model access_threat.md --cache-ns access --cloud
-```
+If a smoke test fails, it's almost always one of: B1 (submodule not checked out), B2 (DB not running/healthy), B3 (RAG not populated), B4 (`CERTORA`/`CERTORAKEY` not set), or B9 (API key not set) — check those four first before digging further.
 
 ---
 
-## Bug Hunt Workflow (Step by Step)
+## What was actually fixed to make this checklist accurate
 
-```
-1. RESEARCH (1-2 hours)
-   → Read whitepaper, understand protocol, identify risky areas
+While putting this together, three real gaps were found and fixed in this repo (not just documented around):
 
-2. DESIGN DOC (1-2 hours)
-   → Copy template above, fill in details, flag edge cases
-
-3. RUN EXTRACTION (5-15 minutes)
-   → console-autoprove . src/C.sol:C design_doc.md --cloud
-
-4. ANALYZE RESULTS (30-60 minutes)
-   → Look for FAILED rules, read counterexamples, check if realistic
-
-5. VERIFY FINDING (30-60 minutes)
-   → Check actual code, confirm exploit works, write clear report
-
-6. SUBMIT (30 minutes)
-   → Clear steps to reproduce, impact assessment, recommended fix
-
-TOTAL: 4-6 hours per protocol
-```
-
----
-
-## Common Errors & Fixes
-
-| Error | Fix |
-|-------|-----|
-| `AUTOSETUP_PATH not set` | Add `--cloud` flag |
-| `ANTHROPIC_API_KEY not set` | `export ANTHROPIC_API_KEY=sk-...` |
-| `PostgreSQL connection failed` | `cd scripts && docker compose start` |
-| `No solc compiler found` | Install solc with naming convention `solcX.Y` (e.g., `solc8.29`) |
-| `CERTORAKEY not set` | Set for cloud mode: `export CERTORAKEY=...` |
-
----
-
-## Working Without AutoSetup
-
-AutoSetup (private Certora infrastructure) handles compilation analysis and harness generation. **You don't need it.** Use `--cloud` for cloud prover (no setup, 10x faster), or use the manual workflow:
-
-1. Analyze contract with Claude for storage layout, external dependencies, and business logic bugs
-2. Generate CVL harness and `.conf` file with Claude
-3. Extract properties via `console-autoprove ... --cloud`
-4. Combine security + business logic properties into comprehensive CVL
-5. Run prover
-
-See [USER_GUIDE.md](./USER_GUIDE.md) for the complete manual workflow with all 10 business logic categories.
-
----
-
-## The 10 High-Value Business Logic Bug Categories
-
-Based on research of $1B+ real-world DeFi exploits. These cause ~80% of major losses.
-
-| # | Category | Example | Severity |
-|---|----------|---------|----------|
-| 1 | **Asset Conservation** | Inflation/double-mint | CRITICAL |
-| 2 | **Double Withdrawal** | Same value redeemed twice | CRITICAL |
-| 3 | **Reserved Funds** | Beacon ETH protected from access | CRITICAL |
-| 4 | **Solvency** | Total liabilities ≤ total assets | CRITICAL |
-| 5 | **Share Price Integrity** | Cannot inflate share value | CRITICAL |
-| 6 | **Access Control** | Only authorized actors | CRITICAL |
-| 7 | **State Machine** | Valid transitions only | HIGH |
-| 8 | **Accounting Sync** | Multi-contract consistency | CRITICAL |
-| 9 | **Reward Integrity** | Cannot double-claim rewards | HIGH |
-| 10 | **Fund Lockup Prevention** | Recovery always possible | HIGH |
-
-Full details with CVL examples: [USER_GUIDE.md](./USER_GUIDE.md)
-
----
-
-## Severity Framework (Immunefi/Sherlock/HackenProof Standards)
-
-| Severity | Bounty | Requirements |
-|----------|--------|-------------|
-| **CRITICAL** | $10k-$50k+ | Direct theft, permanent freezing, insolvency, unauthorized minting |
-| **HIGH** | $5k-$20k | Temporary freezing >1 month, unclaimed yield theft, broken accounting |
-| **MEDIUM** | $1k-$5k | DoS >1 week, state inconsistency, broken returns |
-| **LOW** | <$1k | Gas issues, informational |
-
----
-
-## Pro Tips
-
-💡 **Cache for Iteration**: Update design doc, re-run with same `--cache-ns`. Cache auto-invalidates when doc changes.
-
-💡 **Multi-Pass Coverage**: Run with different threat models to cover more attack surface.
-
-💡 **Simplify If Timeout**: Reduce concurrent agents: `--max-concurrent 2`.
-
-💡 **Verify Findings**: Don't trust prover alone — check code + runtime.
-
-💡 **Design doc is king**: The single most important factor in finding real bugs.
-
----
-
-## Next Steps: Where to Go From Here
-
-| You want to... | Read |
+| Fixed | Where |
 |---|---|
-| **Start auditing TODAY** (step-by-step manual workflow) | **[AUDIT_WORKFLOW.md](./AUDIT_WORKFLOW.md)** ← START HERE |
-| Full master reference (Copilot prompts, templates) | [MASTER_AUDIT_GUIDE_V2.md](./MASTER_AUDIT_GUIDE_V2.md) |
-| The 10 business logic categories | [BUSINESS_LOGIC_CORE.md](./BUSINESS_LOGIC_CORE.md) |
-| All commands, flags, and error codes | [REFERENCE.md](./REFERENCE.md) |
-| Real vulnerability case studies | [REAL_VULNERABILITY_EXAMPLES.md](./REAL_VULNERABILITY_EXAMPLES.md) |
-| Install/setup AIComposer | [README.md](./README.md) |
-| Understand pipeline internals | [AUTOPROVE.md](./AUTOPROVE.md) |
+| `tui-autoprove`, `console-autoprove`, `sanity-analyzer` weren't registered as installable commands, despite being documented as such | `pyproject.toml` `[project.scripts]` |
+| Typo — "as the user for help" instead of "ask the user for help" | `composer/templates/req_extraction_prompt.j2` |
+| `cex_instructions.j2` never asked Claude to consider vacuity/implicit-assumption/external-state/timelock root causes, only the HAVOCed-ghost case | `composer/templates/cex_instructions.j2` |
+| No contradiction / CVL-expressibility / deduplication / prioritization checks on extracted requirements | `composer/templates/req_extraction_prompt.j2` |
+
+**One gap found but not fixed** (needs a decision from someone who knows the AutoSetup/`pou` dependency, not just an edit): `AUTOPROVE.md`'s documented install command references a `pou` extra that doesn't exist in `pyproject.toml`. See **B7** above for the workaround.
+
+For the full reasoning behind the two template fixes, see [`CEX_AND_REQUIREMENTS_GUIDE.md`](CEX_AND_REQUIREMENTS_GUIDE.md#known-gaps).
 
 ---
 
-## TL;DR — Ultra Condensed
+## If you get stuck
 
-```
-1. Write design_doc.md (2000+ words, specific, with catastrophic failure scenarios)
-2. Run: console-autoprove . src/C.sol:C design_doc.md --cloud
-3. Look for FAILED rules
-4. Investigate failures in code
-5. Verify exploit works
-6. Submit findings
-```
+1. Re-check the four most common blockers listed at the end of **B10**.
+2. [`QUICK_REFERENCE.md`](QUICK_REFERENCE.md) — CEX tool troubleshooting table.
+3. [`SETUP_GUIDE.md`](SETUP_GUIDE.md) — full step-by-step for Track A.
+4. [`AUTOPROVE.md`](AUTOPROVE.md) — AutoProve-specific detail, including pipeline phases and caching.
+5. [`CEX_AND_REQUIREMENTS_GUIDE.md`](CEX_AND_REQUIREMENTS_GUIDE.md) — how the prompt templates and CEX pipeline work internally, if something's misbehaving rather than just failing to start.

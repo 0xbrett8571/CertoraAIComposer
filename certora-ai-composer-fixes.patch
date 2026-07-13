@@ -1,0 +1,1029 @@
+diff --git a/CEX_AND_REQUIREMENTS_GUIDE.md b/CEX_AND_REQUIREMENTS_GUIDE.md
+new file mode 100644
+index 0000000..d431b2d
+--- /dev/null
++++ b/CEX_AND_REQUIREMENTS_GUIDE.md
+@@ -0,0 +1,385 @@
++# Requirement Extraction & Counterexample Analysis — Deep Dive
++
++This guide explains two of AI Composer's LLM prompt templates in detail, and how to get and read a Certora Prover counterexample (CEX) with or without AI Composer.
++
++Everything below was checked directly against the code in this repository (paths and line references are current as of this writing); where the analysis notes a gap or discrepancy, that's called out explicitly rather than glossed over.
++
++## Table of Contents
++
++- [Part 1: `req_extraction_prompt.j2` Deep Dive](#part-1-req_extraction_promptj2-deep-dive)
++- [Part 2: `cex_instructions.j2` Deep Dive](#part-2-cex_instructionsj2-deep-dive)
++- [Part 3: How CEX Extraction Works Inside AI Composer](#part-3-how-cex-extraction-works-inside-ai-composer)
++- [Part 4: How to Extract a CEX Without AI Composer](#part-4-how-to-extract-a-cex-without-ai-composer)
++- [Known gaps](#known-gaps)
++
++---
++
++## Part 1: `req_extraction_prompt.j2` Deep Dive
++
++**File:** [`composer/templates/req_extraction_prompt.j2`](composer/templates/req_extraction_prompt.j2)
++**Purpose:** Get Claude to find implementation requirements that a system design doc implies but that the *formal* CVL spec doesn't cover — turning informal prose into a set of natural-language directives that enrich the spec without rewriting it.
++**Invoked from:** [`composer/natreq/extractor.py`](composer/natreq/extractor.py), as the `initial_prompt` for the requirement-extraction agent. It's paired with a system prompt loaded from `req_role_prompt.j2` (below), and is one leg of the NatSpec pipeline.
++
++### 1.1 The system prompt: `req_role_prompt.j2`
++
++Before `req_extraction_prompt.j2` is even shown to Claude, `req_role_prompt.j2` sets the persona: an expert systems architect who's spent years turning high-level descriptions ("the servers will exchange credentials") into individually-checkable requirements, with domain depth in DeFi economics and smart-contract implementation. This primes Claude to decompose prose rather than just paraphrase it.
++
++### 1.2 The prompt itself, section by section
++
++**Input framing** establishes a two-input model: a system document (informal, "varying levels of formalism/rigor") describing one or more protocol components, plus a *formal* CVL spec for one specific component. This is a deliberate scope-bounding move — Claude is told up front it's working with one formal artifact and one informal one, not reconciling two formal ones.
++
++**Task definition** is the actual instruction:
++
++> Analyze both the system document and the specification to identify any implementation requirements/invariants/properties implied by the system document which are *NOT* covered by the provided specification. Focus *only* on properties/invariants/requirements which can be stated in terms of the component that is the focus of the specification. Do *NOT* consider interactions between components, as they are out of scope.
++
++This is a **delta-based** instruction — find what's in the doc but missing from the spec — with two scope limiters: stick to the one component the spec targets, and ignore cross-component interactions entirely (those are presumably someone else's spec's problem). Output is constrained to a specific phrasing pattern ("The implementation must ensure that...", "When X happens, the implementation must..."), which matters because those directives get consumed downstream as structured natural-language requirements, not free-form commentary.
++
++**Safety & human-in-the-loop enforcement** — three `IMPORTANT` blocks:
++
++1. If Claude can't tell which component the spec targets, it should ask for help.
++2. Claude *must* consult a human via the `human_in_the_loop` tool if uncertain about requirements or meaning — this isn't optional guidance, it's a hard requirement.
++3. An explicit non-goal: Claude is extracting gaps, **not** improving or rewriting the spec file. This boundary matters for soundness — an agent that "improves" a spec while extracting requirements could silently weaken or narrow it.
++
++> **Fixed:** the file previously had a typo in directive 1 — *"...as the user for help"* instead of *"...ask the user for help."* This has been corrected.
++
++**Tools & reasoning** — the last block wires in two shared includes:
++
++```jinja
++<tools>
++{% with cvl_manual_full = false, cvl_kb = false, cvl_researcher = false %}
++{% include "cvl_tools_system_prompt.j2" %}
++{% endwith %}
++</tools>
++
++<reasoning>
++{% with draft_subject = "your extracted requirements", rough_draft_enforced = true, result_tool_name = "reqs" %}
++{% include "rough_draft_protocol.j2" %}
++{% endwith %}
++</reasoning>
++```
++
++- `cvl_tools_system_prompt.j2` is included with the full CVL manual, the CVL knowledge base, and the CVL researcher tool all turned **off** (`false`) — this agent doesn't need deep CVL tooling, since it's reasoning about natural language, not writing CVL.
++- `rough_draft_protocol.j2` is a shared "think before you answer" macro (see [`composer/templates/rough_draft_protocol.j2`](composer/templates/rough_draft_protocol.j2)): Claude must call `write_rough_draft`, then `read_rough_draft` to review its own draft, before submitting via the `reqs` completion tool. Because `rough_draft_enforced = true` is passed here, this isn't just a suggestion — [`extractor.py`](composer/natreq/extractor.py)'s result validator (`_extraction_res_checker`) actively **rejects** a submission if the agent never read its draft back, forcing the two-step draft → review → submit flow rather than a one-shot answer.
++
++### 1.3 Where the human-in-the-loop consultation actually goes
++
++The `human_in_the_loop` tool doesn't necessarily mean "ping a person right now." In `extractor.py`, human interaction is routed through an `OracleHandler` wrapper: if an `extraction_question`-type interrupt fires and an **oracle** callback is configured, the question and context get sent to the oracle instead of blocking on a live human — otherwise it falls through to the underlying `IOHandler`. In interactive use (the TUI/console front ends) that's a real prompt to you; in automated/test contexts it can be answered programmatically.
++
++### 1.4 Quality checks (fixed)
++
++The instructions previously left four things entirely to Claude's judgment (and the human-in-the-loop channel), with no explicit instruction covering them:
++
++- **No contradiction check** — nothing told Claude to flag it if a doc-derived requirement conflicts with the existing spec rather than just supplementing it.
++- **No CVL-expressibility check** — a requirement could be extracted even if it wasn't actually formalizable (e.g. "the protocol must feel responsive to users").
++- **No deduplication guidance** — nothing prevented re-deriving a requirement the spec already covers, beyond the general "focus on what's not covered" instruction.
++- **No priority/ranking guidance** — all extracted requirements came back as an undifferentiated list.
++
++The prompt now includes an explicit `IMPORTANT` block instructing Claude to apply four checks to each candidate requirement before finalizing the list:
++
++1. **Contradiction check** — an apparent conflict with the spec must be raised via `human_in_the_loop`, not silently included or silently dropped.
++2. **Expressibility check** — only requirements that could in principle be a CVL rule or invariant over contract state/behavior are included; purely qualitative claims are excluded.
++3. **Deduplication check** — a requirement already enforced by the spec (even under different phrasing or a different rule name) is excluded, even if the system document also mentions it.
++4. **Prioritization** — the final list is ordered most-to-least critical (fund safety / access control / core invariants first), expressed *only* through list order, with no inline tag or label in the requirement text.
++
++That last constraint isn't arbitrary: the extraction result's `reqs` field is a plain `list[str]` (see [`composer/natreq/extractor.py`](composer/natreq/extractor.py)), and `req_text` is explicitly typed downstream as "the requirement text (without the numeric label)" — it's rendered as-is in the TUI/console front ends (`composer/ui/codegen_rich.py`, `composer/ui/console.py`). A bracketed priority tag baked into the string would leak into that display. `req_num`, a separate field, already drives ordering (`run_requirements` is read back `ORDER BY req_num ASC`), so expressing priority through list position — rather than inventing a new field — was the only change that didn't require touching the schema or any downstream consumer.
++
++---
++
++## Part 2: `cex_instructions.j2` Deep Dive
++
++**File:** [`composer/templates/cex_instructions.j2`](composer/templates/cex_instructions.j2)
++**Purpose:** Once the Prover reports a `VIOLATED` rule, this tells Claude how to read the counterexample and propose a fix.
++**Invoked from:** [`composer/prover/analysis.py`](composer/prover/analysis.py)'s `analyze_cex_raw`, which is called by `DefaultCexHandler.analyze_cex` in [`composer/prover/core.py`](composer/prover/core.py), inside the main verify loop, only for rules whose `status == "VIOLATED"`.
++
++### 2.1 The prompt, section by section
++
++**Analysis task:**
++
++> Please analyze the previous counterexample. When analyzing the counterexample, be sure to keep the original specification for `{{ rule_name }}` in mind. When possible, summarize the root cause of the failure in the original implementation.
++
++This assumes the CEX is already in the conversation as prior context (it is — see [Part 3](#part-3-how-cex-extraction-works-inside-ai-composer)) and explicitly ties the analysis back to the spec being verified, rather than analyzing the trace in isolation.
++
++**Uncertainty handling:**
++
++> If you are uncertain as the exact cause, indicate this. If you have multiple theories, list those theories.
++
++This is a hedge against false confidence — the prompt would rather get "here are two plausible root causes" than a single overconfident (and possibly wrong) diagnosis. That principle also shows up elsewhere in the codebase's LLM guidance around formal-verification analysis: getting a confidently wrong explanation is worse than admitting uncertainty, because a wrong fix can make an unsound spec look like it passes.
++
++**Output format constraint:**
++
++> IMPORTANT: Respond to this message with a natural language response. Do NOT use any tools. Phrase your analysis in the second person, e.g., "You learned that the original implementation had the defect ..." and "You must make the following changes ..."
++
++Two things bundled here: (1) this is meant to be a terminal, non-tool-calling turn — the analysis is the deliverable, not a springboard for more tool use — and (2) second-person phrasing ("You learned...", "You must...") reads as direct, actionable guidance rather than a passive bug report, which matters because this text is often what gets surfaced straight to a human via `rule_feedback.j2`.
++
++**The HAVOC/ghost anti-pattern warning:**
++
++> IMPORTANT: If the failure is due to ghosts being HAVOCed due to an unresolved call, *NEVER* suggest making the ghosts persistent as a fix. Instead, suggest alternative ways to address the unresolved call from summarization, linking changes, etc.
++
++This is the most CVL-specific instruction in the file, and it's guarding against a real trap. When the Prover hits a call it can't resolve (e.g. a call into an external contract with no known implementation), it HAVOCs the affected state — i.e. assumes it could be anything — which routinely causes otherwise-correct rules to fail. The naive "fix" is to make the relevant ghost variable `persistent`, which makes the failure go away by construction rather than by actually modeling the call. That produces a spec that verifies but no longer means anything for that code path — a soundness hole disguised as a fix. The prompt steers Claude toward the real remedies instead: linking the external contract to a concrete implementation (`--link`), summarizing the unresolved function's behavior in `methods {}`, or adjusting the linking strategy so the call resolves in the first place.
++
++### 2.2 The exact message sequence Claude sees
++
++From `analyze_cex_raw`:
++
++```python
++new_messages.append(
++    ToolMessage(
++        tool_call_id=tool_call_id,
++        content=f"""
++The Certora Prover found a violation for the rule {rule.name}, with the following counter example:
++{rule.cex_dump}
++"""
++    )
++)
++new_messages.append(
++    HumanMessage(
++        content=load_jinja_template("cex_instructions.j2", rule_name=rule.name)
++    )
++)
++
++res = await llm.ainvoke(new_messages)
++```
++
++So concretely: (1) a `ToolMessage` carrying the raw XML counterexample dump for that rule, followed immediately by (2) a `HumanMessage` containing the instructions above with `{{ rule_name }}` filled in, and (3) Claude's response is the natural-language analysis — returned as plain text (`res.text`), not a tool call.
++
++### 2.3 Non-code root causes (fixed)
++
++The file previously covered only **one** anti-pattern (HAVOCed ghosts), with no instruction to also consider whether the root cause lies in the *rule* rather than the implementation. It now includes an additional `IMPORTANT` block asking Claude to check for:
++
++- **Unreachable preconditions** — the rule may never actually trigger on any input, which can look like "verified" for the wrong reason (vacuity) rather than a real guarantee.
++- **Implicit assumptions** baked into the rule (e.g. "assumes the contract is already initialized") that the CEX is really exposing, not a code defect.
++- **External-state assumptions** (e.g. "assumes an oracle price is stable") that the counterexample violates by construction.
++- **Timelock/time-based constraints** the rule depends on but doesn't state.
++
++In each of those cases, the right conclusion may be "the rule needs to be relaxed or made more precise," not "the implementation is buggy" — the prompt now explicitly asks Claude to make that call rather than defaulting straight to a code fix.
++
++---
++
++## Part 3: How CEX Extraction Works Inside AI Composer
++
++### 3.1 End-to-end flow
++
++```
++Certora Prover run
++        │
++        ▼
++Reports/treeView/treeViewStatus_*.json   (raw tree-view status)
++        │
++        ▼
++composer/prover/results.py
++  get_final_treeview()        — finds the highest-numbered treeViewStatus file
++  read_and_format_run_result() — validates + flattens it into RuleResult objects
++  flatten_tree_view()          — walks the tree, extracts CEX JSON for VIOLATED rules
++  calltrace_to_xml()           — converts the CEX call trace to XML for the LLM
++        │
++        ▼
++dict[str, RuleResult]   (one entry per rule, keyed by name)
++        │
++        ▼
++composer/prover/core.py  (the verify loop)
++  for each VIOLATED rule → DefaultCexHandler.analyze_cex()
++        │
++        ▼
++composer/prover/analysis.py :: analyze_cex_raw()
++  appends CEX as a ToolMessage + cex_instructions.j2 as a HumanMessage, calls the LLM
++        │
++        ▼
++Claude's natural-language root-cause analysis
++        │
++        ▼
++rule_feedback.j2  →  final Markdown report per rule
++```
++
++### 3.2 Parsing the tree view
++
++The Prover writes its results as a `treeViewStatus_N.json` tree of `RuleNodeModel` nodes (name, status, `nodeType`, child nodes, and — for violated leaves — an `output` list pointing at the CEX file). `get_final_treeview` just finds the numerically-latest status file in `Reports/treeView/` and validates it against the `TreeViewStatus` Pydantic model.
++
++`flatten_tree_view` walks this tree recursively, and it's more than a simple VIOLATED/not-VIOLATED switch — the actual status space is `VERIFIED | VIOLATED | TIMEOUT | ERROR | SANITY_FAILED | SKIPPED`, and each is handled differently (errors collect child error messages, timeouts with no children terminate directly, verified nodes with only sanity children collapse into a single result, and so on). The part relevant to CEX handling is this branch:
++
++```python
++violated_assert_children = any([ c.nodeType == "VIOLATED_ASSERT" for c in r.children])
++if violated_assert_children:
++    assert stat == "VIOLATED" and len(r.output) > 0
++    output_file = r.output[0]
++    dump_model = json.loads((context / output_file).read_text())
++    cex_dump : None | str = None
++    if "callTrace" in dump_model:
++        cex_node = CallTraceModel.model_validate(dump_model["callTrace"])
++        cex_dump = "<counterexample>" + calltrace_to_xml(cex_node) + "</counterexample>"
++    return [RuleResult(path=effective_path, cex_dump=cex_dump, status=stat)]
++```
++
++`r.output[0]` is the pointer to the raw CEX JSON file (relative to the tree-view directory); it's loaded, validated against `CallTraceModel`, and converted to an XML string that becomes `RuleResult.cex_dump`.
++
++### 3.3 CEX → XML conversion
++
++`calltrace_to_xml` walks the call-trace tree recursively:
++
++```python
++def calltrace_to_xml(node: CallTraceModel) -> str:
++    formatted_message = node.message.text
++    for i, arg in enumerate(node.message.arguments):
++        placeholder = f"{{{i}}}"
++        formatted_message = formatted_message.replace(placeholder, arg.value)
++
++    xml_parts = [f"<message>{formatted_message}</message>"]
++    for child in node.childrenList:
++        if child.message.text in ("Setup", "Global State", "Evaluate branch condition", "unknown loop source code"):
++            continue  # skip this, avoid confusing the llm
++        xml_parts.append(f"<child>{calltrace_to_xml(child)}</child>")
++    return "".join(xml_parts)
++```
++
++Two things worth noting: it substitutes `{0}`, `{1}`, ... placeholders in each message with the corresponding argument's `value` field (the Prover emits templated messages, not pre-formatted strings), and it explicitly drops a small set of node types that are noisy but not informative for an LLM reader (`Setup`, `Global State`, `Evaluate branch condition`, `unknown loop source code`).
++
++### 3.4 The `RuleResult` / `RulePath` data model
++
++From [`composer/prover/ptypes.py`](composer/prover/ptypes.py):
++
++```python
++@dataclass
++class RulePath:
++    rule: str
++    contract: Optional[str] = None
++    method: Optional[str] = None
++    sanity: bool = False
++
++@dataclass
++class RuleResult:
++    path: RulePath
++    cex_dump: Optional[str]
++    status: StatusCodes
++    error_messages: list[str] = field(default_factory=list)
++
++    @property
++    def name(self) -> str:
++        return self.path.pprint()
++```
++
++`cex_dump` is only populated when `status == "VIOLATED"` and the Prover actually produced a call trace; `name` is derived from `RulePath.pprint()`, which renders something like `"transfer_succeeds for deposit(uint256)"` when contract/method context is present, or just the bare rule name otherwise.
++
++### 3.5 Triggering analysis
++
++Back in `core.py`, once `read_and_format_run_result` returns the parsed `dict[str, RuleResult]`, every rule is analyzed **concurrently**:
++
++```python
++async def _analyze(rule: RuleResult) -> tuple[RuleResult, str | None]:
++    if rule.status != "VIOLATED":
++        return (rule, None)
++    await callbacks.on_analysis_start(rule)
++    res = await cex.analyze_cex(rule, tool_call_id)
++    ...
++    return (rule, res)
++
++jobs = [_analyze(res) for res in parsed.values()]
++results_with_analysis = await asyncio.gather(*jobs)
++```
++
++Only `VIOLATED` rules get an LLM call; everything else passes through with `analysis = None`. The final per-rule results (including any analysis text) are rendered into a Markdown report via `rule_feedback.j2`.
++
++---
++
++## Part 4: How to Extract a CEX Without AI Composer
++
++You have two real options in this repo, depending on how much infrastructure you want to stand up.
++
++### Option A — the standalone script (recommended, no setup)
++
++[`extract_and_analyze_cex.py`](extract_and_analyze_cex.py) already implements exactly this, with no Docker/Postgres/RAG requirement — just Python and (for the `analyze` command) an Anthropic API key. It's the tool the [Quick Start in the main README](README.md#quick-start) walks through, so if you just want the CEX and Claude's take on it, use that directly:
++
++```bash
++python extract_and_analyze_cex.py list /path/to/prover_results
++python extract_and_analyze_cex.py extract /path/to/prover_results transfer_succeeds
++python extract_and_analyze_cex.py analyze /path/to/prover_results transfer_succeeds \
++  --spec ./spec/Token.spec --output analysis.md
++```
++
++Internally it mirrors the same shape as the in-Composer pipeline (`CertoraResultsParser` finds and loads `treeViewStatus_*.json`, `CEXExtractor` locates the violated rule and reads its CEX file via `output[0]`, formats it as an indented tree instead of XML, and `ClaudeAnalyzer` sends it to the Claude API directly via the `anthropic` SDK with its own prompt — it does not use `cex_instructions.j2` or go through AI Composer's LangGraph workflow at all, so it has no RAG grounding in the CVL manual). If you want RAG-grounded analysis without the full AI Composer setup, the packaged `cex-analyzer` command (`analyzer/analysis.py`) is the middle ground — same idea, backed by the `rag_db` built in the [full installation](README.md#full-installation) steps.
++
++### Option B — fully manual, no script at all
++
++If you want to understand the raw shape of the data (or you're extracting it for something other than Claude), here's what's actually on disk after a Prover run:
++
++**1. Locate the tree view.**
++
++```
++<output_dir>/Reports/treeView/treeViewStatus_0.json
++<output_dir>/Reports/treeView/treeViewStatus_1.json   ← use the highest-numbered file
++```
++
++**2. Find your rule and its status.** The JSON is a `rules` list of nodes, each with `name`, `status`, `nodeType`, `output` (a list of file pointers), and `children`. Walk it recursively looking for `status == "VIOLATED"` and a non-empty `output`:
++
++```python
++import json
++from pathlib import Path
++
++def find_rule(node, rule_name):
++    if node.get("name") == rule_name:
++        return node
++    for child in node.get("children", []):
++        found = find_rule(child, rule_name)
++        if found:
++            return found
++    return None
++
++treeview_dir = Path("/path/to/prover_results/Reports/treeView")
++latest = sorted(treeview_dir.glob("treeViewStatus_*.json"))[-1]
++tree = json.loads(latest.read_text())
++
++rule_node = next(
++    (r for rule in tree["rules"] if (r := find_rule(rule, "transfer_succeeds"))),
++    None,
++)
++```
++
++**3. Load the CEX file.** `rule_node["output"][0]` is a path *relative to the tree-view directory* pointing at the call-trace JSON:
++
++```python
++cex_path = treeview_dir / rule_node["output"][0]
++cex_data = json.loads(cex_path.read_text())
++call_trace = cex_data["callTrace"]
++```
++
++**4. Render the call trace.** Each node has `message: {text, arguments: [{value}, ...]}` and `childrenList`. `{0}`, `{1}`, ... in `text` are placeholders for the corresponding `arguments[i].value`:
++
++```python
++SKIP = {"Setup", "Global State", "Evaluate branch condition", "unknown loop source code"}
++
++def render(node, depth=0):
++    text = node["message"]["text"]
++    for i, arg in enumerate(node["message"].get("arguments", [])):
++        text = text.replace(f"{{{i}}}", arg.get("value", "?"))
++    lines = ["  " * depth + "→ " + text]
++    for child in node.get("childrenList", []):
++        if child["message"]["text"] not in SKIP:
++            lines.append(render(child, depth + 1))
++    return "\n".join(lines)
++
++print(render(call_trace))
++```
++
++That's the same shape `calltrace_to_xml` and `extract_and_analyze_cex.py`'s `format_cex_tree` both build on — this is just the un-abstracted version of it. From here, pasting the rendered trace (plus your `.spec` file) into Claude, or any other LLM, manually reproduces what `cex_instructions.j2` automates — you're just doing the prompt assembly by hand instead of letting `analyze_cex_raw` do it.
++
++### When each option makes sense
++
++| Situation | Use |
++|---|---|
++| Just want the CEX + a fix suggestion, minimal setup | `extract_and_analyze_cex.py` |
++| Want RAG-grounded analysis against the CVL manual, no full AI Composer run | `cex-analyzer` |
++| Debugging the pipeline itself, or scripting something custom | Option B (manual) |
++| Running the full spec-generation/verification loop | AI Composer / AutoProve (see [Part 3](#part-3-how-cex-extraction-works-inside-ai-composer)) |
++
++---
++
++## Known gaps
++
++**Fixed:**
++
++- `cex_instructions.j2` now asks Claude to consider vacuity, implicit assumptions, external-state assumptions, and timelock constraints as possible root causes, not just HAVOCed-ghost handling. See [§2.3](#23-non-code-root-causes-fixed).
++- The `req_extraction_prompt.j2` typo ("as the user for help" → "ask the user for help") is corrected. See [§1.2](#12-the-prompt-itself-section-by-section).
++- `req_extraction_prompt.j2` now includes contradiction, CVL-expressibility, deduplication, and prioritization checks for extracted requirements, instead of leaving all four entirely to model judgment. See [§1.4](#14-quality-checks-fixed).
++- `tui-autoprove`, `console-autoprove`, and `sanity-analyzer` are now registered under `[project.scripts]` in `pyproject.toml`, matching what `AUTOPROVE.md` and `sanity_analyzer/README.md` already documented as installable commands.
++
++**Deliberately deferred** (not a prompt/doc fix — needs a decision from whoever maintains the dependency, not just an edit):
++
++- `AUTOPROVE.md`'s documented install command references a `pou` extra that doesn't exist in `pyproject.toml`. It's tied to the `AutoSetup`-backed auto-setup component (a separate private Certora repo); inventing an empty `pou = []` would hide the problem rather than solve it. See [`GETTING_STARTED.md`](GETTING_STARTED.md) step B7 for the workaround in the meantime.
+diff --git a/GETTING_STARTED.md b/GETTING_STARTED.md
+new file mode 100644
+index 0000000..c2fb850
+--- /dev/null
++++ b/GETTING_STARTED.md
+@@ -0,0 +1,216 @@
++# Getting Started — The Complete Checklist
++
++One ordered, verifiable path from a clean machine to a working install. Every other doc in this repo (`README.md`, `AUTOPROVE.md`, `SETUP_GUIDE.md`, `CEX_AND_REQUIREMENTS_GUIDE.md`) explains a piece of this in more depth — this file's job is just to make sure you do the pieces **in order** and **check each one** before moving to the next, so nothing silently doesn't work three steps later.
++
++There are two tracks. Pick based on what you actually need:
++
++- **Track A — CEX tool only.** Extract and explain Prover counterexamples with Claude. No Docker, no databases, no Prover build. ~5 minutes.
++- **Track B — Full install.** Everything in Track A, plus AutoProve (auto-generate & verify CVL specs), AI Composer (generate implementations from specs), Foundry test generation, and the Sanity Analyzer. Needs Docker, a Postgres-backed RAG index, and either a local Prover build or Certora cloud access.
++
++Track B *includes* everything Track A gives you — you don't need to do both.
++
++---
++
++## Track A — CEX Extraction & Analysis Only
++
++- [ ] **1. Python 3.9+ and an Anthropic API key.** Get a key at [console.anthropic.com](https://console.anthropic.com/account/keys).
++
++- [ ] **2. Download and run the setup script.**
++  ```bash
++  curl -o setup_certora_tools.sh \
++    https://raw.githubusercontent.com/0xbrett8571/CertoraAIComposer/master/setup_certora_tools.sh
++  chmod +x setup_certora_tools.sh
++  ./setup_certora_tools.sh
++  ```
++  Enter your API key when prompted. This creates `~/certora-tools` (isolated venv), installs `anthropic`/`python-dotenv`, copies in `extract_and_analyze_cex.py`, and adds shell aliases.
++
++- [ ] **3. Reload your shell.**
++  ```bash
++  source ~/.bashrc   # or ~/.zshrc
++  ```
++
++- [ ] **4. Verify.**
++  ```bash
++  certora-verify
++  ```
++  Should print your tools home, python env, tool path, and a masked API key. If it doesn't, see the troubleshooting table in [`QUICK_REFERENCE.md`](QUICK_REFERENCE.md).
++
++- [ ] **5. Smoke-test against a real Prover run.** Run your Prover job with `--output_dir` pointed somewhere local, then:
++  ```bash
++  cex-list ./prover_results
++  ```
++  If you see a rule table (even with zero VIOLATED rules), you're done — **Track A complete.**
++
++---
++
++## Track B — Full Install
++
++Everything below is additive on top of a normal clone; do it in this order, since later steps depend on earlier ones (e.g. `uv sync` will fail if `graphcore` isn't checked out yet).
++
++### B0. Prerequisites
++
++- [ ] Python **3.12+**
++- [ ] [`uv`](https://docs.astral.sh/uv/)
++- [ ] Docker with Compose
++- [ ] Anthropic API key
++- [ ] SSH access to `git@github.com:Certora/graphcore.git` (private Certora repo)
++- [ ] Either: a local build of the [Certora Prover](https://github.com/Certora/CertoraProver), **or** a `CERTORAKEY` for cloud mode
++- [ ] Solidity compiler(s) on `$PATH`, named `solcX.Y` (e.g. `solc8.29` for 0.8.29)
++- [ ] *(AutoProve only)* access to Certora's private `AutoSetup` repo
++
++### B1. Clone with submodules
++
++- [ ] ```bash
++  git clone --recurse-submodules https://github.com/0xbrett8571/CertoraAIComposer.git
++  cd CertoraAIComposer
++  ```
++  Already cloned without `--recurse-submodules`? Fix it in place instead of re-cloning:
++  ```bash
++  git submodule update --init
++  ```
++- [ ] **Verify:** `ls graphcore` should show real files, not an empty directory.
++
++### B2. Provision the databases
++
++- [ ] ```bash
++  cd scripts/
++  docker compose create && docker compose start
++  cd ..
++  ```
++- [ ] **Verify the container is healthy:**
++  ```bash
++  docker compose -f scripts/docker-compose.yml ps
++  ```
++  Status should show `healthy`, not `starting` or `unhealthy`.
++- [ ] **Verify the databases actually got created** (via `init-db.sql`, run automatically on first start):
++  ```bash
++  docker exec -it composer_db-postgres-1 psql -U postgres -c "\l" | grep -E "rag_db|audit_db|langgraph_store_db|langgraph_checkpoint_db|memory_tool_db"
++  ```
++  You should see all five. If the container was already running from a previous partial setup and these are missing, remove the volume and recreate: `docker compose down -v && docker compose create && docker compose start`.
++- [ ] ⚠️ No attempt has been made to secure this database — local dev only. Restart it after every host reboot (or set a `restart` policy in `docker-compose.yml` — it's currently `unless-stopped`, which should survive most cases, but confirm with `docker ps` after a reboot).
++
++### B3. Build the RAG index
++
++- [ ] ```bash
++  ./gen_docs.sh          # builds the CVL manual HTML into prover-docs/
++  ./populate_rag.sh       # populates rag_db — used by AutoProve, AI Composer, cex-analyzer
++  ```
++- [ ] *(Only if you'll use the Sanity Analyzer)*
++  ```bash
++  ./populate_extended_rag.sh   # populates extended_rag_db — CVL + Prover docs
++  ```
++- [ ] **Verify:**
++  ```bash
++  docker exec -it composer_db-postgres-1 psql -U rag_user -d rag_db -c "SELECT count(*) FROM rag.langchain_pg_embedding;"
++  ```
++  (Password is `rag_password`, from `composer/scripts/init-db.sql` — table name may differ slightly by embedding-store version; if this exact query errors, `\dt rag.*` first to see what's actually there.) A non-zero count means the RAG index is populated.
++- [ ] Documentation changes later? Don't repeat all of the above by hand — use `./refresh_rag.sh` (see its `--help` for `--all` / `--skip-gen-docs`). Run it offline; it wipes before rebuilding.
++
++### B4. Get a Certora Prover
++
++Pick one:
++
++- [ ] **Local mode:** from the root of your Certora Prover repo clone, run `./gradlew copy-assets`, then set:
++  ```bash
++  export CERTORA=/path/to/CertoraProver/target
++  ```
++- [ ] **Cloud mode:** just set `CERTORAKEY` — no local build needed. AutoProve supports this via `--cloud`.
++- [ ] **Verify:** `echo $CERTORA` (local) or `echo $CERTORAKEY` (cloud) prints something non-empty.
++
++### B5. Solidity compilers
++
++- [ ] Install whatever `solc` versions your target projects need, named `solcX.Y` on `$PATH` (e.g. `solc8.29` → Solidity `0.8.29`).
++- [ ] **Verify:** `which solc8.29` (or whatever version you need) resolves.
++
++### B6. Install Python dependencies
++
++- [ ] Choose **exactly one** `certora-cli` extra (they're mutually exclusive — the build will fail if you pick more than one):
++  ```bash
++  uv sync --extra ml --extra certora-cli          # stable channel (recommended default)
++  # or: --extra certora-cli-beta / --extra certora-cli-beta-mirror
++  ```
++- [ ] *(Only if you're in your own venv instead of `uv`'s managed one)* also install the certora-cli requirements from the Prover repo, and remember to activate this environment every time:
++  ```bash
++  uv pip install -r certora_cli_requirements.txt   # run from CertoraProver/scripts
++  ```
++- [ ] **Verify:** `uv run python -c "import composer, analyzer, sanity_analyzer; print('imports OK')"`
++
++### B7. Install the console scripts
++
++- [ ] ```bash
++  uv tool install '.[ml,certora-cli]'
++  ```
++  > ⚠️ **`AUTOPROVE.md` documents this as `uv tool install '.[ml,certora-cli,pou]'`.** The `pou` extra (needed by the AutoSetup-backed auto-setup component) is **not currently defined in `pyproject.toml`** — that install command will fail as written. If you only need AI Composer, the CEX tools, Foundry generation, or the Sanity Analyzer, omit `pou` (as above) — none of those depend on it. If you specifically need **AutoProve**, you'll need `AUTOSETUP_PATH` set to a working `AutoSetup` checkout regardless (see B8) and may need to resolve the missing `pou` extra with whoever maintains that dependency internally before `tui-autoprove`/`console-autoprove` will run cleanly.
++- [ ] **Verify each command resolves** (doesn't need to succeed yet, just be found):
++  ```bash
++  which cex-analyzer sanity-analyzer ap-trail console-foundry tui-foundry \
++        console-autoprove tui-autoprove tui-natspec cache-natspec autoprove-report-render
++  ```
++  All ten should print a path. If any are missing, re-run `uv tool install` — as of this revision, all ten are registered in `[project.scripts]`.
++
++### B8. *(AutoProve only)* AutoSetup
++
++- [ ] Clone Certora's private `AutoSetup` repo, then:
++  ```bash
++  export AUTOSETUP_PATH=/path/to/autosetup
++  ```
++- [ ] AutoProve will fail at import time if this isn't set — this only applies to `tui-autoprove`/`console-autoprove`, nothing else.
++
++### B9. API key (same as Track A)
++
++- [ ] ```bash
++  export ANTHROPIC_API_KEY="sk-ant-..."
++  ```
++
++### B10. End-to-end smoke test
++
++Run each tool you actually plan to use against a trivial project — `examples/trivial` exists exactly for this:
++
++- [ ] **CEX tools:** already covered by Track A above.
++- [ ] **Foundry generation:**
++  ```bash
++  console-foundry examples/trivial path/to/Contract.sol:ContractName
++  ```
++- [ ] **Sanity Analyzer:** point it at any `UnsatCoreTAC-*.txt` report file you have (needs `extended_rag_db` from B3).
++- [ ] **AutoProve** *(if B8 is done)*:
++  ```bash
++  console-autoprove examples/trivial path/to/Contract.sol:ContractName examples/trivial/system_doc_simple.txt
++  ```
++- [ ] **AI Composer core:** rough edges expected — check `composer/console/app.py` and [`TOOL_STATUS_AND_USAGE.md`](TOOL_STATUS_AND_USAGE.md), this workflow predates AutoProve and is being consolidated with it.
++
++If a smoke test fails, it's almost always one of: B1 (submodule not checked out), B2 (DB not running/healthy), B3 (RAG not populated), B4 (`CERTORA`/`CERTORAKEY` not set), or B9 (API key not set) — check those four first before digging further.
++
++---
++
++## What was actually fixed to make this checklist accurate
++
++While putting this together, three real gaps were found and fixed in this repo (not just documented around):
++
++| Fixed | Where |
++|---|---|
++| `tui-autoprove`, `console-autoprove`, `sanity-analyzer` weren't registered as installable commands, despite being documented as such | `pyproject.toml` `[project.scripts]` |
++| Typo — "as the user for help" instead of "ask the user for help" | `composer/templates/req_extraction_prompt.j2` |
++| `cex_instructions.j2` never asked Claude to consider vacuity/implicit-assumption/external-state/timelock root causes, only the HAVOCed-ghost case | `composer/templates/cex_instructions.j2` |
++| No contradiction / CVL-expressibility / deduplication / prioritization checks on extracted requirements | `composer/templates/req_extraction_prompt.j2` |
++| ERC20 summarization defaulted to strict-conservation semantics with no check for fee-on-transfer/rebasing/callback/blacklist token behavior | `composer/templates/erc20_advice.j2` |
++| Hybrid summarization's storage hooks didn't address proxy-pattern tokens (e.g. USDC-style upgradeable proxies) | `composer/templates/hybrid_advice.j2` |
++| Invariant judge's per-criterion evidentiary bars contradicted its own "60% confidence" summary line | `composer/templates/invariant_judge_prompt.j2` |
++| Invariant judge's "never contradict yourself" rule required near-unfalsifiable 95% self-certainty to revise a prior verdict, with no allowance for new evidence | `composer/templates/invariant_judge_prompt.j2` |
++| DISPATCHER-summary soundness was a judgment call with no working tool to check it against — `resolution_guidance.j2` existed but was never bound as a callable tool | `composer/spec/guidance.py`, `composer/spec/cvl_generation.py`, `composer/templates/property_generation_prompt.j2` |
++| No check for base-case independence when structural invariants are mutually dependent | `composer/templates/structural_invariant_prompt.j2` |
++| Fixing a `SANITY_FAILURE` by relaxing a shared precondition wasn't checked against other rules' base cases | `composer/templates/property_generation_prompt.j2` |
++| Requirement judge's `VIOLATED` classification conflated "confirmed defect" with "couldn't locate the code" | `composer/templates/req_classifications.j2`, `composer/templates/req_judge_prompt.j2`, `composer/natreq/judge.py` (new `INCONCLUSIVE` classification) |
++
++**One gap found but not fixed** (needs a decision from someone who knows the AutoSetup/`pou` dependency, not just an edit): `AUTOPROVE.md`'s documented install command references a `pou` extra that doesn't exist in `pyproject.toml`. See **B7** above for the workaround.
++
++For the full reasoning behind the two template fixes, see [`CEX_AND_REQUIREMENTS_GUIDE.md`](CEX_AND_REQUIREMENTS_GUIDE.md#known-gaps).
++
++---
++
++## If you get stuck
++
++1. Re-check the four most common blockers listed at the end of **B10**.
++2. [`QUICK_REFERENCE.md`](QUICK_REFERENCE.md) — CEX tool troubleshooting table.
++3. [`SETUP_GUIDE.md`](SETUP_GUIDE.md) — full step-by-step for Track A.
++4. [`AUTOPROVE.md`](AUTOPROVE.md) — AutoProve-specific detail, including pipeline phases and caching.
++5. [`CEX_AND_REQUIREMENTS_GUIDE.md`](CEX_AND_REQUIREMENTS_GUIDE.md) — how the prompt templates and CEX pipeline work internally, if something's misbehaving rather than just failing to start.
+diff --git a/README.md b/README.md
+index 0300004..948d0cc 100644
+--- a/README.md
++++ b/README.md
+@@ -16,7 +16,7 @@ AI Composer is a collection of Claude-powered agents and utilities, built by Cer
+ 
+ All of this is backed by a local, documentation-derived RAG index so the LLM can ground its CVL usage in the actual Prover manual rather than guessing.
+ 
+-> **New here? Start with the [Quick Start](#quick-start) for the standalone counterexample tool** — it needs nothing but Python and an API key. Everything else (AutoProve, the full AI Composer pipeline, Foundry generation) needs the full [installation](#full-installation).
++> **New here? Go straight to [`GETTING_STARTED.md`](GETTING_STARTED.md)** — a single ordered, verifiable checklist covering both the lightweight CEX tool and the full install (AutoProve, AI Composer, Foundry generation, Sanity Analyzer), with a check after every step so nothing silently fails three steps later. The [Quick Start](#quick-start) and [Full Installation](#full-installation) sections below cover the same ground in narrative form.
+ 
+ ---
+ 
+@@ -287,12 +287,14 @@ tests/              pytest suite
+ 
+ | Document | Covers |
+ |---|---|
++| [`GETTING_STARTED.md`](GETTING_STARTED.md) | **Start here.** One ordered, verifiable checklist from clean machine to working install, both tracks |
+ | [`README.md`](README.md) | This file — overview, installation, usage map |
+ | [`AUTOPROVE.md`](AUTOPROVE.md) | AutoProve pipeline: setup, arguments, options, pipeline phases, caching |
+ | [`SETUP_GUIDE.md`](SETUP_GUIDE.md) | Full, step-by-step setup instructions for the CEX tool |
+ | [`QUICK_REFERENCE.md`](QUICK_REFERENCE.md) | One-page CEX tool command cheat sheet |
+ | [`TOOL_STATUS_AND_USAGE.md`](TOOL_STATUS_AND_USAGE.md) | Tool-by-tool status and structure notes |
+ | [`VISUAL_SUMMARY.md`](VISUAL_SUMMARY.md) | Architecture and data-flow diagrams |
++| [`CEX_AND_REQUIREMENTS_GUIDE.md`](CEX_AND_REQUIREMENTS_GUIDE.md) | Deep dive on `req_extraction_prompt.j2` and `cex_instructions.j2`, how CEX extraction works internally, and how to extract a CEX with or without AI Composer |
+ | [`sanity_analyzer/README.md`](sanity_analyzer/README.md) | Sanity Analyzer setup and CLI |
+ 
+ ---
+@@ -311,8 +313,8 @@ uv run pyright
+ 
+ ## Known issues
+ 
+-- **`tui-autoprove`, `console-autoprove`, and `sanity-analyzer` are not currently declared under `[project.scripts]`** in `pyproject.toml`, even though they're documented (and implemented, at `composer/cli/tui_autoprove.py`, `composer/cli/console_autoprove.py`, and `sanity_analyzer/analysis.py`) as installable commands. Until that's fixed, invoke them by running the module's `main()` directly (e.g. `uv run python -c "from composer.cli.tui_autoprove import main; main()"`) rather than assuming a plain install exposes the command.
+ - The original AI Composer workflow (spec → implementation) predates the AutoProve pipeline and its exact current invocation is in flux; check `composer/console/app.py` and [`TOOL_STATUS_AND_USAGE.md`](TOOL_STATUS_AND_USAGE.md) rather than relying solely on this README if something doesn't match.
++- Two prompt-template gaps identified in [`CEX_AND_REQUIREMENTS_GUIDE.md`](CEX_AND_REQUIREMENTS_GUIDE.md) — a typo in `req_extraction_prompt.j2` and missing non-code-root-cause guidance in `cex_instructions.j2` — have been fixed as of this revision; see that guide's "Known gaps" section for anything still open.
+ 
+ ---
+ 
+diff --git a/composer/natreq/judge.py b/composer/natreq/judge.py
+index dc56f4f..089d0d4 100644
+--- a/composer/natreq/judge.py
++++ b/composer/natreq/judge.py
+@@ -31,7 +31,7 @@ class JudgeInput(FlowInput, RoughDraftState):
+     vfs: dict[str, str]
+     orig_reqs: list[str]
+ 
+-ClassificationType = Literal["SATISFIED", "LIKELY", "PARTIAL", "VIOLATED"]
++ClassificationType = Literal["SATISFIED", "LIKELY", "PARTIAL", "VIOLATED", "INCONCLUSIVE"]
+ 
+ class RequirementAnalysis(BaseModel):
+     """
+@@ -45,7 +45,9 @@ class RequirementAnalysis(BaseModel):
+     requirement_number : int = Field(description="The requirement number.")
+ 
+     commentary: str | None = Field(description="Any commentary or explanation for the classification of this requirement. In the case of" \
+-    "PARTIAL or VIOLATED classifications, do NOT suggest code changes: simply explain the deficiencies in the implementation.")
++    "PARTIAL or VIOLATED classifications, do NOT suggest code changes: simply explain the deficiencies in the implementation. In the case of" \
++    "an INCONCLUSIVE classification, do NOT describe a deficiency (none was confirmed): instead, state specifically what you searched for" \
++    "and could not locate or confirm, so a future round knows what to investigate.")
+ 
+ class JudgeResult(BaseModel):
+     judgement_result: list[RequirementAnalysis] = Field(description="A list of analysis results, with one element per original requirement.")
+@@ -95,7 +97,10 @@ provided.
+ Each requirement is evaluated against the current implementation and assigned a classification:
+ {classification_explanation}
+ 
+-If any requirements are classified as PARTIAL or VIOLATED, you must address this feedback.
++If any requirements are classified as PARTIAL or VIOLATED, you must address this feedback with changes to the
++implementation. If any requirements are classified as INCONCLUSIVE, the judge was unable to locate or confirm the
++relevant code — do NOT make speculative code changes in response; instead, make the relevant code easier to find
++(e.g., by name or location) or clarify the requirement, so a future round can actually locate and judge it.
+     """
+ 
+ def _format_result(
+diff --git a/composer/spec/cvl_generation.py b/composer/spec/cvl_generation.py
+index 1579b4a..af85f96 100644
+--- a/composer/spec/cvl_generation.py
++++ b/composer/spec/cvl_generation.py
+@@ -26,7 +26,7 @@ from graphcore.tools.schemas import WithImplementation, WithInjectedState, WithI
+ from composer.spec.context import (
+     WorkflowContext, CacheKey, CVLGeneration, CVLJudge,
+ )
+-from composer.spec.guidance import ERC20TokenGuidance, UnresolvedCallGuidance
++from composer.spec.guidance import ERC20TokenGuidance, UnresolvedCallGuidance, ResolutionGuidance
+ from composer.core.state import merge_validation
+ from composer.spec.graph_builder import run_to_completion
+ from composer.cvl.tools import put_cvl_raw, put_cvl, get_cvl, edit_cvl
+@@ -383,6 +383,7 @@ def static_tools() -> list[BaseTool]:
+         edit_cvl(CVLGenerationState),
+         ERC20TokenGuidance.as_tool("erc20_guidance"),
+         UnresolvedCallGuidance.as_tool("unresolved_call_guidance"),
++        ResolutionGuidance.as_tool("resolution_guidance"),
+     ]
+ 
+ 
+diff --git a/composer/spec/guidance.py b/composer/spec/guidance.py
+index 77b5193..c5f0c3e 100644
+--- a/composer/spec/guidance.py
++++ b/composer/spec/guidance.py
+@@ -22,3 +22,15 @@ unresolved calls.
+     @override
+     def run(self) -> str:
+         return load_jinja_template("unresolved_call_guidance.j2")
++
++@tool_display("Getting call resolution guidance", None)
++class ResolutionGuidance(WithImplementation[str]):
++    """
++Invoke this tool to receive guidance on how the Certora Prover resolves ambiguous/polymorphic calls (e.g.,
++calls through an interface type), and what it takes to *soundly* conclude that a callee is definitely one of
++the contracts in the prover's inputs. Consult this before relying on a DISPATCHER summary, which unsoundly
++assumes the callee is always one of the known contracts.
++    """
++    @override
++    def run(self) -> str:
++        return load_jinja_template("resolution_guidance.j2")
+diff --git a/composer/templates/cex_instructions.j2 b/composer/templates/cex_instructions.j2
+index 51be96f..fc173f0 100644
+--- a/composer/templates/cex_instructions.j2
++++ b/composer/templates/cex_instructions.j2
+@@ -12,3 +12,15 @@ changes ... "
+ 
+ IMPORTANT: If the failure is due to ghosts being HAVOCed due to an unresolved call, *NEVER* suggest making the ghosts
+ persistent as a fix. Instead, suggest alternative ways to address the unresolved call from summarization, linking changes, etc.
++
++IMPORTANT: When analyzing the counterexample, also consider whether the root cause lies in the *rule* rather than the
++implementation. In particular, check for:
++1. UNREACHABLE preconditions — the rule may never actually trigger on any input, which can indicate vacuity rather
++   than a meaningful guarantee.
++2. IMPLICIT assumptions baked into the rule (e.g., assuming the contract is already initialized) that the
++   counterexample is exposing rather than a genuine code defect.
++3. EXTERNAL state assumptions (e.g., assuming an oracle price is stable) that the counterexample violates by
++   construction.
++4. TIMELOCK or other time-based constraints the rule depends on but does not state.
++If any of these apply, say so explicitly and consider whether the rule itself needs relaxation or clarification,
++not just the implementation.
+diff --git a/composer/templates/erc20_advice.j2 b/composer/templates/erc20_advice.j2
+index 3a645f7..0da7459 100644
+--- a/composer/templates/erc20_advice.j2
++++ b/composer/templates/erc20_advice.j2
+@@ -1,6 +1,44 @@
+ When reasoning about ERC20 tokens, it is extremely common to simply model the behavior of all
+ tokens using prover *ghost state* and *CVL summaries*.
+ 
++IMPORTANT: Before applying the summarization strategy below, determine which *behavioral* regime applies to
++each ERC20 instance you are summarizing. An interface being "standard ERC20" (i.e., exposing transfer/balanceOf/
++approve/etc.) says nothing about whether its *runtime* behavior matches the strict, conservation-preserving model
++assumed below. Specifically, check for evidence that the token(s) in question may exhibit:
++
++1. FEE-ON-TRANSFER / DEFLATIONARY behavior: the recipient receives less than the amount sent.
++2. REBASING behavior: balances can change without any transfer call (e.g., an explicit `rebase`/`sync` method, or
++   balances computed from a share/index rather than stored directly).
++3. CALLBACK/HOOK behavior (ERC777, ERC1363-style): the transfer call can invoke arbitrary code on the recipient or
++   sender, a reentrancy surface the flat ghost-mapping model below does not represent.
++4. BLACKLIST/PAUSABLE behavior: transfer can revert based on account status rather than balance.
++
++Look for evidence in two places:
++* **The contract under verification's own code.** Does it use a "balance-before / balance-after" diffing pattern
++  around transfers (e.g., reading `balanceOf` immediately before and after a `transferFrom` to compute the actual
++  amount received, rather than trusting the `amount` argument)? This is a strong signal the protocol is
++  *deliberately defending* against fee-on-transfer or similar tokens — using the strict conservation model below
++  would then be unsound for verifying that defense; it needs to be relaxed to allow `received <= amount` rather
++  than assuming `received == amount`.
++* **The application context / system document.** Does it name specific, known tokens (e.g., "this vault only
++  accepts USDC and WETH") versus describing arbitrary, permissionless, or user-supplied token listing?
++
++Based on what you find:
++
++- **Evidence indicates a small set of specific, well-known, standards-compliant tokens** — the strict model below
++  is appropriate. Proceed with it, but record this determination and its basis via `plan_write` so it is auditable.
++- **Evidence indicates the protocol may interact with non-standard tokens** (fee-on-transfer, rebasing, or tokens
++  permissionlessly supplied by users) — the strict model below is unsound for that case. Do NOT use it unmodified.
++  Instead, relax the summary to admit the relevant non-standard behavior (e.g., model the credited amount as any
++  value `<= amount` for a possible fee-on-transfer token, using a declared-but-undefined variable rather than
++  assuming exact conservation), and record this modeling choice in a CVL comment directly above the summary.
++- **Evidence is genuinely ambiguous** (you cannot determine which regime applies from the source code or provided
++  context) — do NOT silently default to the strict model without comment. Proceed with the strict model as a
++  documented, explicit assumption: record the ambiguity prominently via `plan_write`, naming the specific tokens
++  or interfaces it applies to, and add a CVL comment directly above the affected summary stating that a
++  standards-compliant, conservation-preserving token was assumed and that this assumption has not been confirmed
++  against the actual tokens the protocol will interact with in production.
++
+ For example, the behavior of transfer is usually summarized as follows:
+ 
+ ```cvl
+@@ -44,8 +82,10 @@ in this example, if the call returns `false` or simply reverts on an error (both
+ 
+ The other ERC20 functions are modelled similarly with ghost mappings for allowances.
+ 
+-In the vast majority of cases, where the protocol is expected to be used with standards compliant, non-malicious ERC20 tokens,
+-this modelling is sufficient; explicitly including implementations of ERC20 tokens in the prover is *generally* not necessary.
++This exact-conservation model is sufficient *only* for the regime you determined above — a small set of specific,
++well-known, standards-compliant tokens. Do not treat it as a universal default; explicitly including implementations
++of ERC20 tokens in the prover is *generally* not necessary once the regime check above has been done, but the check
++itself is not optional.
+ 
+ However, if the protocol has its own extensions to ERC20 which expose functions that are *significant* points of interaction outside
+ of the ERC20 standard, then they should be included.
+diff --git a/composer/templates/hybrid_advice.j2 b/composer/templates/hybrid_advice.j2
+index a993f41..25008a5 100644
+--- a/composer/templates/hybrid_advice.j2
++++ b/composer/templates/hybrid_advice.j2
+@@ -57,3 +57,12 @@ hook Sstore _erc20_summ_stake1._balances[key address account] uint newValue {
+ ```
+ 
+ One such set of hooks will be needed for each explicit erc20 instance.
++
++IMPORTANT: This hook pattern assumes the storage layout referenced (`_erc20_summ_stake1._balances`) belongs directly
++to the contract instance you are hooking. Many large, real-world tokens (including USDC) are deployed behind an
++upgradeable proxy: the storage lives at the proxy's address, but the compiled ABI and storage-layout reasoning
++come from a separate logic contract. If a token you are explicitly modelling is proxy-based, hook the storage
++variable as it is laid out at the *proxy* contract instance provided to the prover, not the logic contract — check
++which of the two was actually given as the explicit ERC20 instance in the prover inputs before writing the hook,
++and if it is unclear from the inputs which one holds the live storage, treat this as an ambiguity to flag (as
++described in the regime-check step above) rather than guessing.
+diff --git a/composer/templates/invariant_judge_prompt.j2 b/composer/templates/invariant_judge_prompt.j2
+index bbd88ea..326c642 100644
+--- a/composer/templates/invariant_judge_prompt.j2
++++ b/composer/templates/invariant_judge_prompt.j2
+@@ -13,14 +13,34 @@ You should evaluate the proposed invariant against several different criteria:
+   then the invariant is definitely NOT inductive.
+ 4. Structural: Is the invariant significantly structural?
+ 
+-If the invariant fails any of the above criteria, then you should return feedback to this effect. However, the bar
+-to use when measuring the invariant against these criteria depends on the specific criterion:
+-1. Plausibility: Reject only if there is *overwhelmingly strong evidence* that the invariant will not hold
+-2. Formalizability: Reject if there are any significant issues with the formalization
+-3. Inductive: Reject if there are any significant concerns regarding the inductiveness
+-4. Structural: Reject only if there is *strong evidence* that the invariant does not qualify as structural
++If the invariant fails any of the above criteria, then you should return feedback to this effect. The bar to use
++when measuring the invariant against these criteria is *not* uniform — it depends on the specific criterion and the
++asymmetric cost of getting it wrong in each direction:
+ 
+-In summary, the bar to reject an invariant requires *at least* 60% confidence in all cases.
++1. **Plausibility**: Reject only if there is *overwhelmingly strong evidence* that the invariant will not hold —
++   i.e., you can point to specific code that contradicts it, not just an absence of code that confirms it. A false
++   rejection here discards a possibly-correct, useful invariant before it is ever tried; the cost of being wrong
++   falls almost entirely on over-rejecting, so the bar to reject is deliberately high.
++2. **Formalizability**: Reject if there are any significant, concretely identifiable issues with the formalization
++   (e.g., the invariant as stated references a temporal notion, an unbounded quantification the Prover cannot
++   express, or a purely qualitative property with no state-based translation). This bar is lower than Plausibility's
++   — formalizability issues are usually structurally clear-cut, and a false *acceptance* here is expensive: it
++   sends an unformalizable invariant into an actual CVL-authoring attempt that is doomed to fail.
++3. **Inductive**: Reject if there are any significant, concretely identifiable concerns regarding inductiveness
++   (most commonly: the invariant is actually a temporal or postcondition-shaped claim, not a property that holds
++   at every reachable state independent of history). As with Formalizability, this bar is lower than Plausibility's,
++   for the same reason — a non-inductive "invariant" cannot be proven as stated no matter how plausible it is.
++4. **Structural**: Reject only if there is *strong, specific evidence* that the invariant is better characterized as
++   a safety/security property than a structural one — e.g., it is primarily mathematical/economic in nature and not
++   "obvious to an informed reader," per `invariant_explanation.j2`. As with Plausibility, a false rejection here
++   has a real cost (a useful invariant is dropped), so keep this bar closer to Plausibility's than to
++   Formalizability's/Inductive's.
++
++Do not try to reduce these four bars to a single numeric percentage — your confidence as a language model is not a
++calibrated probability, and forcing every criterion through one number is what caused the four different
++evidentiary standards above to be stated inconsistently in earlier guidance. Instead, ground each rejection in a
++*specific, citable* piece of evidence (a line of code, a concrete counterexample scenario, an explicit temporal
++qualifier in the invariant's own wording) rather than a general sense of unease.
+ 
+ {% with draft_subject = "your feedback" %}
+ {% include "rough_draft_protocol.j2" %}
+@@ -39,7 +59,13 @@ In particular, if you learn some fact "field X is always used in context Y" that
+ record that information to avoid having to re-analyze source code as much as possible.
+ 
+ **IMPORTANT**: Do NOT give contradictory feedback in different rounds on the same invariant; your feedback
+-should always be "monotone".
++should always be "monotone" — with one exception. If you are shown *new, concrete evidence* that was not available
++to you in a prior round (e.g., the author cites a specific line of code you had not seen, points out a typechecker
++or Prover result that contradicts your prior assumption, or the invariant's proposed formulation actually changed
++in a way that resolves your earlier objection), you should revise your feedback accordingly. This is not a
++contradiction — it is updating on new information, the same as any sound reasoning process would. What you should
++avoid is reversing a prior verdict based purely on re-reading the *same* evidence and second-guessing yourself;
++reserve revision for cases where something genuinely new is in front of you.
+ 
+ You may also assume that the code has not changed since you wrote the contents of your memory. That is,
+ if you concluded in a prior analysis that fact X about the implementation is true, you may assume that X is still true.
+diff --git a/composer/templates/property_generation_prompt.j2 b/composer/templates/property_generation_prompt.j2
+index d96585c..0747ef3 100644
+--- a/composer/templates/property_generation_prompt.j2
++++ b/composer/templates/property_generation_prompt.j2
+@@ -90,6 +90,12 @@ feedback as soon as possible.
+   In other words, the preconditions in the rule and the logical encoding of the implementation's code are themselves
+   mutually unsatisfiable. In this case, you should try to identify places where `require` statements in your rule
+   may conflict with any assumptions/requirements in the code.
++  + If your fix involves relaxing or removing a `require`/`requireInvariant` that is *shared* with other rules
++    (i.e., other rules also `requireInvariant` the same invariant, or rely on the same precondition being true),
++    check whether that precondition was load-bearing for those other rules' own base cases or reachability —
++    weakening it here can silently reintroduce vacuity elsewhere rather than only fixing the rule in front of you.
++    A full, rule-unscoped `verify_spec` run (Step 4 below) will catch this eventually, but reasoning about it now,
++    at the point of the change, is cheaper than discovering it later as an unrelated-looking sanity failure.
+ * For any other logical errors/issues not described here, address the changes in a methodical way. Use your
+   adaptive thinking and the cvl researcher to come to *principled* solutions. Do *NOT* try to brute force
+   the solution by trying random changes.
+@@ -107,6 +113,10 @@ within the generated summary, match the callee contract against known implemente
+ For those callees, simply dispatch the call to the relevant implementation. For calls "outside" of the prover
+ inputs, fall back on a sound model of the external behavior, using e.g., ghosts.
+ 
++Before using a DISPATCHER summary, call the `resolution_guidance` tool and apply its criteria to the specific
++call site — do not treat "definitely one of the contracts in prover inputs" as a judgment call you make from
++general intuition. If the call site does not meet those criteria, use the hybrid approach above instead.
++
+ ## Step 4
+ 
+ Once all non-skipped properties have been approved by the feedback judge, AND all rules that are not expected
+diff --git a/composer/templates/req_classifications.j2 b/composer/templates/req_classifications.j2
+index c95888f..63a0028 100644
+--- a/composer/templates/req_classifications.j2
++++ b/composer/templates/req_classifications.j2
+@@ -1,5 +1,14 @@
+ * SATISFIED: with overwhelming certainty, the implementation satisfies the requirement
+ * LIKELY: the implementation *seems* to satisfy the requirement, but precise verification of this fact is beyond your reasoning capabilities (e.g., requiring symbolic
+ reasoning, etc.)
+-* PARTIAL: The implementation partially satisfies the requirement, but some key behavior is missing
+-* VIOLATED: With overwhelming certainty, the implementation does not satisfy the requirement, OR there is no evidence that the requirement is satisfied.
++* PARTIAL: you found and examined the relevant code, and it partially satisfies the requirement, but some key behavior is confirmed missing
++* VIOLATED: with overwhelming certainty, having found and examined the relevant code, the implementation does not satisfy the requirement
++* INCONCLUSIVE: after a genuine search, you could not locate the code relevant to this requirement, or could not determine whether it satisfies the requirement — this is a search/reasoning limitation, not a confirmed defect. Do NOT use VIOLATED for this case.
++
++VIOLATED and INCONCLUSIVE are easy to conflate but mean different things to whoever reads your classification: VIOLATED
++says "I checked, and it's broken" — it should only be used when you can point to the specific code that fails to meet
++the requirement. INCONCLUSIVE says "I couldn't confirm either way" — use it whenever the honest answer is that you
++didn't find enough to judge, rather than defaulting to VIOLATED because no evidence of satisfaction turned up. Both
++INCONCLUSIVE and VIOLATED still require further attention before a requirement can be considered met — the difference
++is what that attention should look like: VIOLATED calls for a fix to the implementation; INCONCLUSIVE calls for
++locating and examining the relevant code before any fix is attempted.
+diff --git a/composer/templates/req_extraction_prompt.j2 b/composer/templates/req_extraction_prompt.j2
+index 7df10d1..c3a0c56 100644
+--- a/composer/templates/req_extraction_prompt.j2
++++ b/composer/templates/req_extraction_prompt.j2
+@@ -17,7 +17,24 @@ After your analysis, formulate these extracted requirements in natural language
+ directive should be similar to "The implementation must ensure that ...", 
+ "When X happens, the implementation must ...", etc.
+ 
+-IMPORTANT: If you are unclear as to what component the specification is targeting, as the user for help.
++IMPORTANT: Before finalizing your list of requirements, apply the following checks to each candidate:
++
++1. CONTRADICTION CHECK: If a requirement implied by the system document appears to conflict with the provided
++   specification, rather than merely supplementing it, do *NOT* silently include it and do *NOT* silently drop it.
++   Use the human_in_the_loop tool to flag the apparent conflict and ask how to proceed before deciding.
++2. EXPRESSIBILITY CHECK: Only include requirements that could, in principle, be formalized as a CVL rule or
++   invariant over the state and behavior of the component (e.g., "the balance must never decrease during a
++   withdrawal-only call"). Do *NOT* include requirements that are purely qualitative or subjective and cannot be
++   checked against contract state or behavior (e.g., "the protocol must feel responsive to users").
++3. DEDUPLICATION CHECK: Before including a requirement, check whether the provided specification already
++   enforces the same property, even if phrased differently or under a different rule name. If it does, do *NOT*
++   include it, even if the system document also describes it.
++4. PRIORITIZATION: Order your final list of requirements from most to least critical, where "most critical" means
++   most directly related to fund safety, access control, or core protocol invariants, and "least critical" means
++   secondary behavioral or usability properties. Express priority *only* through list order — do *NOT* add a
++   priority label, tag, or numeric prefix inside the requirement text itself.
++
++IMPORTANT: If you are unclear as to what component the specification is targeting, ask the user for help.
+ 
+ IMPORTANT: You *MUST* consult the user if you are uncertain about specific requirements or the meaning
+ behind parts of the system document or specification. You MUST use the human_in_the_loop tool to clarify any
+diff --git a/composer/templates/req_judge_prompt.j2 b/composer/templates/req_judge_prompt.j2
+index 72c432e..781af95 100644
+--- a/composer/templates/req_judge_prompt.j2
++++ b/composer/templates/req_judge_prompt.j2
+@@ -36,8 +36,20 @@ The implementation is provided to you via an (immutable) virtual file system (VF
+ 
+ <guidance>
+ <clarification>
+-CLARIFICATION: The lack of existence for a satisfied requirement should bias you towards Violated. 
+-In other words, in the absence of any evidence a requirement is satisfied, you should judge it to be violated.
++CLARIFICATION: Do not default to SATISFIED or LIKELY just because you didn't find anything wrong — the absence of
++evidence of satisfaction is not evidence of satisfaction. But before you classify a requirement, make sure you
++distinguish *why* you lack evidence:
++
++* If you made a genuine effort to locate the relevant code (using `list_files`/`grep_files`/`get_file` as
++  appropriate — a single missed grep pattern is not a genuine effort) and are confident you *found and examined*
++  the code that should implement this requirement, and it does not do so: classify VIOLATED.
++* If, despite a genuine search effort, you could not locate the relevant code, or located it but cannot determine
++  whether it satisfies the requirement: classify INCONCLUSIVE, not VIOLATED. Say in your commentary specifically
++  what you searched for and where, so a future round (or a human) knows what to look at next.
++
++Both classifications mean "this requirement is not yet confirmed satisfied" and both require follow-up — the
++distinction is for whoever reads your output, so a confirmed defect isn't confused with a search that came up
++empty.
+ </clarification>
+ <important>
+ Requirements may say that an implementation must "ensure" something. In this context,
+diff --git a/composer/templates/structural_invariant_prompt.j2 b/composer/templates/structural_invariant_prompt.j2
+index 20b65ee..8285240 100644
+--- a/composer/templates/structural_invariant_prompt.j2
++++ b/composer/templates/structural_invariant_prompt.j2
+@@ -43,6 +43,15 @@ For example, if i1 states "every active position has a non-zero owner" and i2 st
+ exceeds the array length", then i1 likely depends on i2 because without i2, the prover could consider
+ out-of-bounds positions that vacuously violate i1.
+ 
++**IMPORTANT**: A *mutual* dependency (i1 depends on i2, and i2 also depends on i1) is not automatically a problem —
++each invariant's inductive step is allowed to assume the other, provided each is proven independently as an
++induction over method calls. What you must check for mutually-dependent pairs specifically is the *base case*:
++immediately after construction (before any external method has been called), does i1 hold *without* needing to
++assume i2, and does i2 hold *without* needing to assume i1? If establishing either invariant's base case implicitly
++relies on the other invariant already being true, the pair has not actually been shown to hold from a fresh
++deployment — note this explicitly when reporting the dependency, so the base case can be checked independently
++before any `requireInvariant` cross-referencing is added between them.
++
+ ## Step 4
+ Output the results of your analysis using the provided tool.
+ </task>
+diff --git a/pyproject.toml b/pyproject.toml
+index 6e5ae00..f4ef66a 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -77,7 +77,10 @@ graphcore = { path = "./graphcore", editable = true }
+ 
+ [project.scripts]
+ cex-analyzer = "analyzer.analysis:main"
++sanity-analyzer = "sanity_analyzer.analysis:main"
+ ap-trail = "composer.cli.ap_trail:main"
++console-autoprove = "composer.cli.console_autoprove:main"
++tui-autoprove = "composer.cli.tui_autoprove:main"
+ console-foundry = "composer.cli.console_foundry:main"
+ tui-foundry = "composer.cli.tui_foundry:main"
+ autoprove-report-render = "composer.spec.source.report.render:main"
