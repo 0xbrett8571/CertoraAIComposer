@@ -153,19 +153,23 @@ The LLM grounds its CVL usage in the actual Prover documentation via a local RAG
 
 ```bash
 ./gen_docs.sh          # builds the CVL manual HTML into prover-docs/
-./populate_rag.sh       # populates rag_db (used by AutoProve, AI Composer, cex-analyzer)
-./populate_extended_rag.sh   # populates extended_rag_db (CVL + Prover docs, used by sanity-analyzer)
+./populate_rag.sh       # populates the rag schema (used by AutoProve, AI Composer, cex-analyzer)
+./populate_extended_rag.sh   # populates the extended_rag schema (CVL + Prover docs, used by sanity-analyzer)
 ```
+
+There is only one physical database, `rag_db` — `populate_rag.sh` and `populate_extended_rag.sh` both write into it,
+as different PostgreSQL users (`rag_user` and `extended_rag_user`) each scoped via `search_path` to their own schema
+(`rag` and `extended_rag` respectively — see `composer/scripts/init-db.sql`).
 
 The RAG is fully derived from the docs and is read-only at query time, so when the docs change you just rebuild:
 
 ```bash
-./refresh_rag.sh                 # regenerate docs, then wipe + rebuild rag_db
-./refresh_rag.sh --all           # also rebuild extended_rag_db
+./refresh_rag.sh                 # regenerate docs, then wipe + rebuild the rag schema
+./refresh_rag.sh --all           # also rebuild the extended_rag schema
 ./refresh_rag.sh --skip-gen-docs # rebuild from HTML already in prover-docs/
 ```
 
-Run this offline — it empties the target database before re-embedding, during which CVL manual search returns nothing.
+Run this offline — it empties the target schema before re-embedding, during which CVL manual search returns nothing.
 
 ### 3. Build the Prover
 
@@ -205,7 +209,7 @@ tui-autoprove <project_root> <path/to/Contract.sol:ContractName> <design_doc>
 console-autoprove <project_root> <path/to/Contract.sol:ContractName> <design_doc>
 ```
 
-Useful options include `--cloud` (run the Prover in Certora's cloud instead of locally), `--max-concurrent` (parallel agents for property extraction/CVL generation, default 4), `--cache-ns` (enable cross-run caching so repeated runs skip completed phases), and `--model`/`--tokens`/`--thinking-tokens` to tune the LLM call. Full details, including the five pipeline phases and cache/memory exploration, are in [`AUTOPROVE.md`](AUTOPROVE.md).
+Useful options include `--cloud` (run the Prover in Certora's cloud instead of locally), `--max-concurrent` (parallel agents for property extraction/CVL generation, default 4), `--cache-ns` (enable cross-run caching so repeated runs skip completed phases), and `--heavy-model`/`--lite-model`/`--tokens`/`--thinking-tokens` to tune the LLM calls (AutoProve has no single `--model` flag). Full details, including the five pipeline phases and cache/memory exploration, are in [`AUTOPROVE.md`](AUTOPROVE.md).
 
 ### AI Composer — generate code from a spec
 
@@ -235,7 +239,7 @@ When a rule comes back **unsat** rather than verified/violated, the Prover emits
 sanity-analyzer /path/to/report/Reports/UnsatCoreTAC-myRule-myMethod-description-0.txt
 ```
 
-It needs the extended RAG database (`extended_rag_db`) from the [installation](#full-installation) steps above. See [`sanity_analyzer/README.md`](sanity_analyzer/README.md) for the full CLI reference.
+It needs the extended RAG schema (populated by `populate_extended_rag.sh`, into the same `rag_db` — see the RAG index section under [installation](#full-installation) above) rather than a separate database. See [`sanity_analyzer/README.md`](sanity_analyzer/README.md) for the full CLI reference.
 
 ### Inspecting past runs
 

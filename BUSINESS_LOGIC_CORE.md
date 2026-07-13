@@ -1,7 +1,3 @@
-The bash tool isn't available in this session. I'll reproduce the file exactly as it was written:
-
----
-
 # Business Logic Core — Updated Sections for MASTER_AUDIT_GUIDE_V2.md
 ## Replaces Parts 3, 4, 6 (Prompt A), and 13
 
@@ -128,10 +124,16 @@ Established: $5k–$50k+ per finding on complex protocols
 ---
 
 ## PART 4 (UPDATED): THE 10 BUSINESS LOGIC BUG CATEGORIES
-### Exact CLAIM → PROPERTY Format for design_doc.md
+### CLAIM → PROPERTY: a useful convention for design_doc.md, not a required format
 
-These are not theoretical. Each category maps to real exploits that cost
-protocols millions. Use this exact format when writing your design_doc.md.
+These are not theoretical. Each category maps to real exploits that cost protocols millions.
+
+**Note on format:** AI Composer doesn't parse or require any particular syntax in your design doc — the whole
+document is read as prose by an LLM classification step that derives structured requirements from it, so what
+matters is writing a clear, unambiguous, standalone claim, not matching a specific template. The `PROPERTY:`
+labeling below is a readability convention worth adopting anyway (it keeps a long design doc organized and makes
+each claim easy to spot on review), but there's nothing special about the literal string — a plain paragraph
+saying the same thing works identically well.
 
 ---
 
@@ -635,11 +637,16 @@ If NO:
 ---
 
 ## PART 13 (UPDATED): CATASTROPHIC FAILURE SCENARIOS
-### Exact format for the final section of every design_doc.md
+### A recommended section for every design_doc.md — not a format AI Composer recognizes structurally
 
-Add this section to EVERY design_doc.md. This forces you to name
-the five worst outcomes and what prevents each one. AIComposer uses
-these to generate its highest-priority verification targets.
+Add this section to EVERY design_doc.md. This forces you to name the five worst outcomes and what prevents each
+one. **Note on mechanism:** there's no code in AI Composer that looks for a section literally titled "Catastrophic
+Failure Scenarios," a `CF-N` numbering scheme, or the `Must Never Happen:`/`Affected Functions:` labels below —
+the design doc is read as prose by an upstream classification step (not string-matched by heading), so nothing
+about this specific structure gets special treatment over any other clearly-written part of the document. The
+value of doing this exercise is in the thinking it forces (naming the worst outcomes explicitly tends to surface
+requirements you'd otherwise miss), and clear, explicit language here is more likely to be picked up accurately
+regardless of the heading style you use.
 
 ```markdown
 # Catastrophic Failure Scenarios

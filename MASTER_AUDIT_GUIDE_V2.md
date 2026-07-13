@@ -764,9 +764,11 @@ cex-analyzer \
 | Result | Meaning | Your Action |
 |--------|---------|------------|
 | VERIFIED | Property holds for all inputs | Record as confirmed safe |
-| FAILED | Counter-example found — potential bug! | Investigate immediately with cex_analyzer |
+| VIOLATED | Counter-example found — potential bug! (the Prover's actual status string is `VIOLATED`, not `FAILED`) | Investigate immediately with cex_analyzer |
 | TIMEOUT | Too complex to finish | Simplify the rule, add more preconditions |
-| SKIPPED | Property couldn't be formalized in CVL | Check if a real bug is hidden here |
+| SANITY_FAILED | The rule/invariant's assertion is unreachable — a precondition conflict, not a code bug | Check for vacuity; see `cex_instructions.j2` guidance |
+| ERROR | The rule failed to run (e.g. a typecheck or setup error), not a property violation | Fix the underlying error and re-run |
+| SKIPPED | The rule was not run this pass (e.g. filtered out, or blocked by an earlier error) | Check why it didn't run before treating it as passing |
 
 ### Translating Counter-Examples for Judges
 

@@ -119,8 +119,9 @@ cat all_properties.json | jq '[.[] | .sort] | group_by(.) | map({sort: .[0], cou
 | `--max-concurrent` | 4 | Maximum parallel agents for property extraction and CVL generation |
 | `--cache-ns` | None | Cache namespace for cross-run caching |
 | `--memory-ns` | None | Memory namespace (defaults to thread ID) |
-| `--model` | `claude-opus-4-6` | Anthropic model to use |
-| `--tokens` | 10000 | Token budget for LLM responses |
+| `--heavy-model` | `claude-opus-4-6` | Anthropic model for complex tasks. Auto-Prove has no single `--model` flag — it uses this and `--lite-model` instead. |
+| `--lite-model` | `claude-sonnet-4-6` | Anthropic model for simpler tasks |
+| `--tokens` | 128000 | Token budget for code generation |
 | `--thinking-tokens` | 2048 | Thinking token budget |
 | `--rag-db` | `postgresql://rag_user:rag_password@localhost:5432/rag_db` | RAG database connection string |
 | `--interactive` | off | Enable realtime property refinement |
@@ -138,7 +139,7 @@ cat all_properties.json | jq '[.[] | .sort] | group_by(.) | map({sort: .[0], cou
 | `--debug-prompt-override` | None | Append text to the initial prompt |
 | `--tokens` | 128000 | Token budget for code generation |
 | `--thinking-tokens` | 2048 | Thinking token budget |
-| `--model` | sonnet | Anthropic model name |
+| `--model` | `claude-opus-4-6` | Anthropic model name |
 | `--thread-id` | auto | Thread ID for resumption |
 | `--checkpoint-id` | None | Checkpoint ID for resumption |
 | `--summarization-threshold` | auto | Token threshold for history summarization |

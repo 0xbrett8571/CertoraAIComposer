@@ -60,7 +60,8 @@ Everything below is additive on top of a normal clone; do it in this order, sinc
 
 ### B1. Clone with submodules
 
-- [ ] ```bash
+- [ ] 
+  ```bash
   git clone --recurse-submodules https://github.com/0xbrett8571/CertoraAIComposer.git
   cd CertoraAIComposer
   ```
@@ -93,11 +94,11 @@ Everything below is additive on top of a normal clone; do it in this order, sinc
 
 - [ ] ```bash
   ./gen_docs.sh          # builds the CVL manual HTML into prover-docs/
-  ./populate_rag.sh       # populates rag_db — used by AutoProve, AI Composer, cex-analyzer
+  ./populate_rag.sh       # populates the rag schema in rag_db — used by AutoProve, AI Composer, cex-analyzer
   ```
 - [ ] *(Only if you'll use the Sanity Analyzer)*
   ```bash
-  ./populate_extended_rag.sh   # populates extended_rag_db — CVL + Prover docs
+  ./populate_extended_rag.sh   # populates the extended_rag schema, same rag_db — CVL + Prover docs
   ```
 - [ ] **Verify:**
   ```bash
@@ -171,7 +172,7 @@ Run each tool you actually plan to use against a trivial project — `examples/t
   ```bash
   console-foundry examples/trivial path/to/Contract.sol:ContractName
   ```
-- [ ] **Sanity Analyzer:** point it at any `UnsatCoreTAC-*.txt` report file you have (needs `extended_rag_db` from B3).
+- [ ] **Sanity Analyzer:** point it at any `UnsatCoreTAC-*.txt` report file you have (needs the extended_rag schema populated in B3).
 - [ ] **AutoProve** *(if B8 is done)*:
   ```bash
   console-autoprove examples/trivial path/to/Contract.sol:ContractName examples/trivial/system_doc_simple.txt
