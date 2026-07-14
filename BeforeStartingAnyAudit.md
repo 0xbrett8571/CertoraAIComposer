@@ -98,7 +98,7 @@ tests/ test_scenarios/ Test fixtures & example inputs
 - [ ] Step 4: YOU converted each claim to a formal property (plain English)
 - [ ] Step 5: Pre/postconditions defined for 3+ critical functions
 - [ ] Step 6: design_doc.md drafted — ZERO code in it
-- [ ] Step 7: Copilot reviewed doc — all 10 categories addressed
+- [ ] Step 7: Copilot reviewed doc — all 12 categories addressed (or the condensed 10-category quick-start variant, at minimum — see `MASTER_AUDIT_GUIDE_V2.md` Part 4)
 
 ## Before Running AIComposer
 

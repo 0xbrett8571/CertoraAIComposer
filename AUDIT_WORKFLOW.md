@@ -81,7 +81,7 @@ certoraRun certora/confs/MyContract.conf \
 WHAT YOU HAVE TODAY:
   ✓ GitHub Copilot Pro (Claude Opus) in VS Code
   ✓ AIComposer codebase (installed, ready)
-  ✓ All documentation (MASTER_AUDIT_GUIDE_V2, BUSINESS_LOGIC_CORE, REFERENCE)
+  ✓ All documentation (MASTER_AUDIT_GUIDE_V2, REFERENCE)
 
 WHAT YOU CAN DO TODAY:
   ✓ Full contract analysis (storage, functions, dependencies)
@@ -546,11 +546,13 @@ Please validate:
 
 ---
 
-## Phase 3: 10-Category Business Logic Analysis
+## Phase 3: Business Logic Analysis
 
 **Goal**: Find the deep, high-value vulnerabilities that static analyzers miss.
 
-**Tool**: GitHub Copilot Pro Chat (Prompt A from BUSINESS_LOGIC_CORE.md)
+**Tool**: GitHub Copilot Pro Chat.
+
+> The prompt below is a condensed, 10-category quick-start variant meant for pasting straight into Copilot Chat. For the canonical, current 12-category version — which adds Upgrade & Proxy Safety and Cross-Chain/Bridge Trust — use **Prompt A** in [`MASTER_AUDIT_GUIDE_V2.md`](MASTER_AUDIT_GUIDE_V2.md) Part 6.
 
 ---
 
@@ -1258,7 +1260,7 @@ function testReservedBalanceDrain() public {
 | **1A: Storage** | "Analyze this contract: storage layout with read/write mapping, function analysis with reentrancy assessment, actor map" |
 | **1B: External** | "Classify all external contracts: type, imported by, key functions, potential issues (transfer fees, callbacks, rebasing), CVL summary suggestion" |
 | **2: Validate** | "I extracted these claims. Did I miss any? Are my interpretations accurate? Are there implicit claims?" |
-| **3: 10-Cat** | [Full Prompt A from BUSINESS_LOGIC_CORE.md — pasted above in Phase 3] |
+| **3: Business logic** | [Condensed 10-category prompt pasted above in Phase 3; canonical 12-category Prompt A is in `MASTER_AUDIT_GUIDE_V2.md` Part 6] |
 | **4: Review** | "Review this design_doc.md for specificity, completeness, traceability, code presence, edge cases, impact clarity" |
 | **5: CVL** | "Write a Certora CVL rule/invariant for this property: [paste property]. Contract: [paste code]" |
 | **6A: Conf** | "Generate a .conf file for [ContractName] with method summaries, solc version, verify directive, 600s timeout" |
