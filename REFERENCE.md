@@ -792,8 +792,8 @@ Standardized per Immunefi, Sherlock, and HackenProof:
 | 11 | Upgrade & Proxy Safety | CRITICAL | `upgradeToAndCall@withrevert(e,_,_); assert lastReverted` (non-authority) |
 | 12 | Cross-Chain / Bridge Trust | CRITICAL | `processMessage@withrevert(e, usedId, _); assert lastReverted` |
 
-See `BUSINESS_LOGIC_CORE.md` for the full Claim/Property/CVL treatment of each category, and
-`MASTER_AUDIT_GUIDE_V2.md` Part 4 for the audit-workflow integration.
+See `MASTER_AUDIT_GUIDE_V2.md` Part 4 for the full Claim/Property/CVL treatment of each category and its
+audit-workflow integration.
 
 ---
 

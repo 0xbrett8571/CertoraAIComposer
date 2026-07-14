@@ -1,47 +1,83 @@
+<div align="center">
+
 # Certora AI Composer
 
-**LLM-driven tooling for formal verification with the Certora Prover** — generating CVL specifications and verified implementations, explaining failed proofs, and closing the loop between Claude and the Prover.
+**LLM-driven tooling for formal verification with the Certora Prover.**
+Generate CVL specifications and verified implementations, explain failed proofs, and close the loop between Claude and the Prover.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue.svg)](pyproject.toml)
 [![Status: Research Prototype](https://img.shields.io/badge/status-research%20prototype-orange.svg)](#project-status)
+[![Built by Certora Labs](https://img.shields.io/badge/built%20by-Certora%20Labs-6E56CF.svg)](https://www.certora.com/)
 
-AI Composer is a collection of Claude-powered agents and utilities, built by Certora Labs, that sit on top of the Certora Prover and the CVL specification language. Depending on what you're trying to do, it can:
+</div>
 
-- **Generate a Solidity implementation** that provably satisfies a given CVL spec and interface (the original "AI Composer" workflow).
-- **Generate and verify CVL specs** for an *existing* Solidity project from a design document (the **AutoProve** pipeline).
-- **Generate Foundry tests** for a contract.
-- **Explain a failed Prover run** by extracting the counterexample (CEX) and asking Claude to diagnose the root cause and propose a fix.
-- **Diagnose unsatisfiable rules** by analyzing the Prover's unsat core.
+---
 
-All of this is backed by a local, documentation-derived RAG index so the LLM can ground its CVL usage in the actual Prover manual rather than guessing.
+> [!TIP]
+> **New here?** Go straight to [`GETTING_STARTED.md`](GETTING_STARTED.md) — a single ordered, verifiable checklist covering both the lightweight CEX tool and the full install (AutoProve, AI Composer, Foundry generation, Sanity Analyzer), with a check after every step so nothing silently fails three steps later. The [Quick Start](#-quick-start) and [Full Installation](#-full-installation) sections below cover the same ground in narrative form.
 
-> **New here? Go straight to [`GETTING_STARTED.md`](GETTING_STARTED.md)** — a single ordered, verifiable checklist covering both the lightweight CEX tool and the full install (AutoProve, AI Composer, Foundry generation, Sanity Analyzer), with a check after every step so nothing silently fails three steps later. The [Quick Start](#quick-start) and [Full Installation](#full-installation) sections below cover the same ground in narrative form.
+## What is AI Composer?
+
+AI Composer is a collection of **Claude-powered agents and utilities**, built by Certora Labs, that sit on top of the [Certora Prover](https://docs.certora.com/) and the CVL specification language. It aims to close the loop between *writing formal specs* and *getting them to verify* — using an LLM to draft, diagnose, and iterate, while the Prover remains the ground truth.
+
+Depending on what you're trying to do, it can:
+
+| Capability | What it means in practice |
+|---|---|
+| 🧩 **Generate a Solidity implementation** | ...that provably satisfies a given CVL spec and interface (the original "AI Composer" workflow). |
+| 📜 **Generate & verify CVL specs** | ...for an *existing* Solidity project from a design document (the **AutoProve** pipeline). |
+| 🧪 **Generate Foundry tests** | ...for a contract, from its source alone. |
+| 🔍 **Explain a failed Prover run** | ...by extracting the counterexample (CEX) and asking Claude to diagnose the root cause and propose a fix. |
+| 🧭 **Diagnose unsatisfiable rules** | ...by analyzing the Prover's unsat core and explaining why the constraints conflict. |
+
+All of this is backed by a **local, documentation-derived RAG index**, so the LLM grounds its CVL usage in the actual Prover manual rather than guessing at syntax.
+
+```mermaid
+flowchart LR
+    A["Solidity project<br/>+ design doc"] -->|AutoProve| B["CVL rules"]
+    C["CVL spec<br/>+ interface"] -->|AI Composer| D["Solidity implementation"]
+    B --> E["Certora Prover"]
+    D --> E
+    E -->|"✅ verified"| F["Done"]
+    E -->|"❌ counterexample"| G["CEX Analyzer"]
+    E -->|"❓ unsat"| H["Sanity Analyzer"]
+    G -->|"diagnosis + fix"| B
+    H -->|"diagnosis + fix"| B
+    RAG[("RAG index<br/>(CVL manual)")] -.grounds.-> B
+    RAG -.grounds.-> D
+    RAG -.grounds.-> G
+    RAG -.grounds.-> H
+```
+
+If you only care about *why a rule failed*, you want the **CEX Analyzer** — a single dependency-light script that's the fastest thing to get running. Everything else generates or verifies code and needs the fuller setup described below.
 
 ---
 
 ## Table of Contents
 
-- [What's in this repo](#whats-in-this-repo)
-- [Quick Start: CEX Extraction & Analysis](#quick-start)
-- [Full Installation](#full-installation)
-- [Usage](#usage)
+- [What is AI Composer?](#what-is-ai-composer)
+- [What's in this repo](#-whats-in-this-repo)
+- [Quick Start: CEX Extraction & Analysis](#-quick-start)
+- [Full Installation](#-full-installation)
+- [Usage](#-usage)
   - [AutoProve — generate & verify CVL specs](#autoprove--generate--verify-cvl-specs)
   - [AI Composer — generate code from a spec](#ai-composer--generate-code-from-a-spec)
   - [Foundry test generation](#foundry-test-generation)
   - [CEX extraction & analysis](#cex-extraction--analysis-1)
   - [Sanity Analyzer — diagnosing unsat rules](#sanity-analyzer--diagnosing-unsat-rules)
   - [Inspecting past runs](#inspecting-past-runs)
-- [Repository layout](#repository-layout)
-- [Examples](#examples)
-- [Documentation map](#documentation-map)
-- [Development](#development)
-- [Known issues](#known-issues)
-- [Project status](#project-status)
+- [Repository layout](#-repository-layout)
+- [Examples](#-examples)
+- [Documentation map](#-documentation-map)
+- [Development](#-development)
+- [Known issues](#-known-issues)
+- [Project status](#-project-status)
+- [License](#license)
 
 ---
 
-## What's in this repo
+## 🧰 What's in this repo
 
 | Tool | Entry point | What it does |
 |---|---|---|
@@ -54,13 +90,11 @@ All of this is backed by a local, documentation-derived RAG index so the LLM can
 | **ap-trail** | `ap-trail` | Lists and inspects past AutoProve run "trails" stored in the audit database. |
 | **cache-natspec** | `cache-natspec` | Browses the cache/memory namespaces produced by the NatSpec pipeline. |
 
-If you only care about understanding why a rule failed, you want the **CEX Analyzer** — it's a single dependency-light script and is the fastest thing to get running. Everything else generates or verifies code and needs the fuller setup described below.
-
 ---
 
-## Quick Start
+## 🚀 Quick Start
 
-This gets the standalone CEX (counterexample) tool running in a few minutes. It only needs Python and an Anthropic API key — no Docker, no databases, no Prover build.
+Gets the standalone **CEX (counterexample) tool** running in a few minutes. It only needs Python and an Anthropic API key — no Docker, no databases, no Prover build.
 
 ### Prerequisites
 
@@ -107,11 +141,11 @@ cex-analyze ./prover_results transfer_succeeds \
 
 `cex-analyze` writes a structured Markdown report (scenario, root cause, ranked fix suggestions, confidence) to `--output`, or prints it to stdout if omitted.
 
-For the full command reference, troubleshooting table, and a day-in-the-life workflow, see [`QUICK_REFERENCE.md`](QUICK_REFERENCE.md) and [`SETUP_GUIDE.md`](SETUP_GUIDE.md).
+📖 For the full command reference, troubleshooting table, and a day-in-the-life workflow, see [`QUICK_REFERENCE.md`](QUICK_REFERENCE.md) and [`SETUP_GUIDE.md`](SETUP_GUIDE.md).
 
 ---
 
-## Full Installation
+## 🏗️ Full Installation
 
 The generation/verification tools (AutoProve, AI Composer, Foundry generation, Sanity Analyzer) need a local Prover build, a set of Postgres databases, and a RAG index built from the CVL documentation. This is heavier than the Quick Start above.
 
@@ -124,7 +158,7 @@ The generation/verification tools (AutoProve, AI Composer, Foundry generation, S
 - The Solidity compiler(s) your target project needs, on `$PATH` (see [Solidity compilers](#solidity-compilers))
 - Access to Certora's private [`graphcore`](https://github.com/Certora/graphcore) repository (see below)
 
-### 0. Clone with submodules
+### Step 0 — Clone with submodules
 
 `graphcore` is a private Certora dependency vendored in as a **git submodule**, not a plain pip package — a plain `git clone` will leave it empty and `uv sync` will fail. Clone (or fix up an existing clone) with:
 
@@ -136,7 +170,7 @@ git submodule update --init
 
 You'll need SSH access to `Certora/graphcore` for this to succeed.
 
-### 1. Provision the databases
+### Step 1 — Provision the databases
 
 From `scripts/`:
 
@@ -147,31 +181,30 @@ docker compose create && docker compose start
 
 This starts a `pgvector/pgvector:pg16` container pre-initialized (via `init-db.sql`) with the databases AI Composer uses: `rag_db` (CVL manual embeddings), `langgraph_store_db`, `langgraph_checkpoint_db` (workflow checkpointing/resume), `memory_tool_db`, and `audit_db` (run history). No attempt has been made to secure this database — treat it as local-dev-only. You'll need to restart the container whenever your host restarts (or adjust its restart policy).
 
-### 2. Build the RAG index
+### Step 2 — Build the RAG index
 
 The LLM grounds its CVL usage in the actual Prover documentation via a local RAG index built from the docs themselves:
 
 ```bash
-./gen_docs.sh          # builds the CVL manual HTML into prover-docs/
-./populate_rag.sh       # populates the rag schema (used by AutoProve, AI Composer, cex-analyzer)
-./populate_extended_rag.sh   # populates the extended_rag schema (CVL + Prover docs, used by sanity-analyzer)
+./gen_docs.sh               # builds the CVL manual HTML into prover-docs/
+./populate_rag.sh           # populates the rag schema (used by AutoProve, AI Composer, cex-analyzer)
+./populate_extended_rag.sh  # populates the extended_rag schema (CVL + Prover docs, used by sanity-analyzer)
 ```
 
-There is only one physical database, `rag_db` — `populate_rag.sh` and `populate_extended_rag.sh` both write into it,
-as different PostgreSQL users (`rag_user` and `extended_rag_user`) each scoped via `search_path` to their own schema
-(`rag` and `extended_rag` respectively — see `composer/scripts/init-db.sql`).
+There is only one physical database, `rag_db` — `populate_rag.sh` and `populate_extended_rag.sh` both write into it, as different PostgreSQL users (`rag_user` and `extended_rag_user`) each scoped via `search_path` to their own schema (`rag` and `extended_rag` respectively — see `composer/scripts/init-db.sql`).
 
 The RAG is fully derived from the docs and is read-only at query time, so when the docs change you just rebuild:
 
 ```bash
-./refresh_rag.sh                 # regenerate docs, then wipe + rebuild the rag schema
-./refresh_rag.sh --all           # also rebuild the extended_rag schema
-./refresh_rag.sh --skip-gen-docs # rebuild from HTML already in prover-docs/
+./refresh_rag.sh                  # regenerate docs, then wipe + rebuild the rag schema
+./refresh_rag.sh --all            # also rebuild the extended_rag schema
+./refresh_rag.sh --skip-gen-docs  # rebuild from HTML already in prover-docs/
 ```
 
-Run this offline — it empties the target schema before re-embedding, during which CVL manual search returns nothing.
+> [!NOTE]
+> Run this offline — it empties the target schema before re-embedding, during which CVL manual search returns nothing.
 
-### 3. Build the Prover
+### Step 3 — Build the Prover
 
 From the root of the Certora Prover repo:
 
@@ -181,7 +214,7 @@ From the root of the Certora Prover repo:
 
 Then point `CERTORA` at the build output (`CertoraProver/target`). If you'd rather skip a local build entirely, AutoProve supports `--cloud` mode with a `CERTORAKEY` instead.
 
-### 4. Install AI Composer's Python dependencies
+### Step 4 — Install AI Composer's Python dependencies
 
 ```bash
 uv sync --extra ml
@@ -195,7 +228,7 @@ AI Composer expects `solc` on `$PATH` following the `solcX.Y` naming convention 
 
 ---
 
-## Usage
+## 📖 Usage
 
 Each generation/verification tool has its own detailed doc; this section is a map, not the full reference.
 
@@ -229,7 +262,7 @@ Generates a Foundry test suite for the given contract.
 
 ### CEX extraction & analysis
 
-Covered in the [Quick Start](#quick-start) above. Once the full RAG/DB setup is in place, the packaged `cex-analyzer` command (backed by `analyzer/analysis.py`) gives the same functionality with RAG-grounded analysis; the standalone `extract_and_analyze_cex.py` script works without any of that setup.
+Covered in the [Quick Start](#-quick-start) above. Once the full RAG/DB setup is in place, the packaged `cex-analyzer` command (backed by `analyzer/analysis.py`) gives the same functionality with RAG-grounded analysis; the standalone `extract_and_analyze_cex.py` script works without any of that setup.
 
 ### Sanity Analyzer — diagnosing unsat rules
 
@@ -239,7 +272,7 @@ When a rule comes back **unsat** rather than verified/violated, the Prover emits
 sanity-analyzer /path/to/report/Reports/UnsatCoreTAC-myRule-myMethod-description-0.txt
 ```
 
-It needs the extended RAG schema (populated by `populate_extended_rag.sh`, into the same `rag_db` — see the RAG index section under [installation](#full-installation) above) rather than a separate database. See [`sanity_analyzer/README.md`](sanity_analyzer/README.md) for the full CLI reference.
+It needs the extended RAG schema (populated by `populate_extended_rag.sh`, into the same `rag_db` — see the RAG index section under [installation](#-full-installation) above) rather than a separate database. See [`sanity_analyzer/README.md`](sanity_analyzer/README.md) for the full CLI reference.
 
 ### Inspecting past runs
 
@@ -247,9 +280,9 @@ It needs the extended RAG schema (populated by `populate_extended_rag.sh`, into 
 
 ---
 
-## Repository layout
+## 🗂️ Repository layout
 
-```
+```text
 composer/          Core library
 ├── prover/         Prover invocation & result parsing (local + cloud)
 ├── cvl/            CVL parsing/generation utilities
@@ -265,7 +298,7 @@ composer/          Core library
 ├── ui/, console/   Textual TUI and console front ends
 ├── cli/            Console-script entry points
 ├── scripts/        RAG build/population scripts
-└── templates/       Prompt templates (Jinja2)
+└── templates/      Prompt templates (Jinja2)
 
 analyzer/           Packaged CEX analyzer (`cex-analyzer`)
 sanity_analyzer/    Unsat-core analyzer (`sanity-analyzer`)
@@ -278,20 +311,24 @@ tests/              pytest suite
 
 ---
 
-## Examples
+## 🧪 Examples
 
 `examples/` contains sample inputs you can use to sanity-check your setup:
 
-- **`examples/trivial`** — a minimal interface/spec/system-doc trio. The generated code isn't interesting, but it's the fastest way to confirm your AI Composer setup works end-to-end.
-- **`examples/cccp_fixed`** / **`examples/cccp_buggy`** — a more realistic pool contract; the "buggy" variant has malformed rules and syntax errors on purpose, to demonstrate the tooling's behavior on imperfect inputs.
+| Example | Purpose |
+|---|---|
+| [`examples/trivial`](examples/trivial) | A minimal interface/spec/system-doc trio. The generated code isn't interesting, but it's the fastest way to confirm your AI Composer setup works end-to-end. |
+| [`examples/cccp_fixed`](examples/cccp_fixed) | A realistic pool contract with a clean spec — good for a "does it verify" smoke test. |
+| [`examples/cccp_buggy`](examples/cccp_buggy) | The same pool contract, but with malformed rules and syntax errors on purpose, to demonstrate the tooling's behavior on imperfect inputs. |
 
 ---
 
-## Documentation map
+## 📚 Documentation map
 
 | Document | Covers |
 |---|---|
 | [`README.md`](README.md) | This file — overview, installation, usage map |
+| [`GETTING_STARTED.md`](GETTING_STARTED.md) | Single ordered checklist from clean machine to working install (both tracks) |
 | [`AUTOPROVE.md`](AUTOPROVE.md) | AutoProve pipeline: setup, arguments, options, pipeline phases, caching |
 | [`SETUP_GUIDE.md`](SETUP_GUIDE.md) | Full, step-by-step setup instructions for the CEX tool |
 | [`QUICK_REFERENCE.md`](QUICK_REFERENCE.md) | One-page CEX tool command cheat sheet |
@@ -299,10 +336,12 @@ tests/              pytest suite
 | [`VISUAL_SUMMARY.md`](VISUAL_SUMMARY.md) | Architecture and data-flow diagrams |
 | [`CEX_AND_REQUIREMENTS_GUIDE.md`](CEX_AND_REQUIREMENTS_GUIDE.md) | Deep dive on `req_extraction_prompt.j2` and `cex_instructions.j2`, how CEX extraction works internally, and how to extract a CEX with or without AI Composer |
 | [`sanity_analyzer/README.md`](sanity_analyzer/README.md) | Sanity Analyzer setup and CLI |
+| [`MASTER_AUDIT_GUIDE_V2.md`](MASTER_AUDIT_GUIDE_V2.md), [`AUDIT_WORKFLOW.md`](AUDIT_WORKFLOW.md), [`BeforeStartingAnyAudit.md`](BeforeStartingAnyAudit.md) | Reference material for using AI Composer as part of a broader manual audit workflow |
+| [`REFERENCE.md`](REFERENCE.md), [`cvl_guidelines.md`](cvl_guidelines.md), [`REAL_VULNERABILITY_EXAMPLES.md`](REAL_VULNERABILITY_EXAMPLES.md) | CVL/Prover reference material and real-world vulnerability case studies |
 
 ---
 
-## Development
+## 🛠️ Development
 
 ```bash
 uv sync --group test --group ci
@@ -314,16 +353,21 @@ uv run pyright
 
 ---
 
-## Known issues
+## ⚠️ Known issues
 
 - The original AI Composer workflow (spec → implementation) predates the AutoProve pipeline and its exact current invocation is in flux; check `composer/console/app.py` and [`TOOL_STATUS_AND_USAGE.md`](TOOL_STATUS_AND_USAGE.md) rather than relying solely on this README if something doesn't match.
-- Two prompt-template gaps identified in [`CEX_AND_REQUIREMENTS_GUIDE.md`](CEX_AND_REQUIREMENTS_GUIDE.md) — a typo in `req_extraction_prompt.j2` and missing non-code-root-cause guidance in `cex_instructions.j2` — have been fixed as of this revision; see that guide's "Known gaps" section for anything still open.
+- Two prompt-template gaps identified in [`CEX_AND_REQUIREMENTS_GUIDE.md`](CEX_AND_REQUIREMENTS_GUIDE.md) — a typo in `req_extraction_prompt.j2` and missing non-code-root-cause guidance in `cex_instructions.j2` — have since been fixed; see that guide's "Known gaps" section for anything still open.
 
 ---
 
-## Project status
+## 🚦 Project status
 
-AI Composer is a **research prototype** released by Certora Labs. Code generated by AI Composer, and fixes suggested by the CEX/Sanity analyzers, should **not** be used in production without thorough independent review, testing, and auditing. The CEX Analysis tool is a standalone utility for extracting and explaining counterexamples from Certora Prover output; its suggested fixes are a starting point, not a substitute for verifying the fix actually holds.
+AI Composer is a **research prototype** released by Certora Labs.
+
+> [!WARNING]
+> Code generated by AI Composer, and fixes suggested by the CEX/Sanity analyzers, should **not** be used in production without thorough independent review, testing, and auditing. The CEX Analysis tool is a standalone utility for extracting and explaining counterexamples from Certora Prover output; its suggested fixes are a starting point, not a substitute for verifying the fix actually holds.
+
+---
 
 ## License
 

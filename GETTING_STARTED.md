@@ -147,7 +147,7 @@ Pick one:
   which cex-analyzer sanity-analyzer ap-trail console-foundry tui-foundry \
         console-autoprove tui-autoprove tui-natspec cache-natspec autoprove-report-render
   ```
-  All ten should print a path. If any are missing, re-run `uv tool install` — as of this revision, all ten are registered in `[project.scripts]`.
+  All ten should print a path — all ten are registered in `[project.scripts]`. If any are missing, re-run `uv tool install`.
 
 ### B8. *(AutoProve only)* AutoSetup
 
@@ -180,23 +180,6 @@ Run each tool you actually plan to use against a trivial project — `examples/t
 - [ ] **AI Composer core:** rough edges expected — check `composer/console/app.py` and [`TOOL_STATUS_AND_USAGE.md`](TOOL_STATUS_AND_USAGE.md), this workflow predates AutoProve and is being consolidated with it.
 
 If a smoke test fails, it's almost always one of: B1 (submodule not checked out), B2 (DB not running/healthy), B3 (RAG not populated), B4 (`CERTORA`/`CERTORAKEY` not set), or B9 (API key not set) — check those four first before digging further.
-
----
-
-## What was actually fixed to make this checklist accurate
-
-While putting this together, three real gaps were found and fixed in this repo (not just documented around):
-
-| Fixed | Where |
-|---|---|
-| `tui-autoprove`, `console-autoprove`, `sanity-analyzer` weren't registered as installable commands, despite being documented as such | `pyproject.toml` `[project.scripts]` |
-| Typo — "as the user for help" instead of "ask the user for help" | `composer/templates/req_extraction_prompt.j2` |
-| `cex_instructions.j2` never asked Claude to consider vacuity/implicit-assumption/external-state/timelock root causes, only the HAVOCed-ghost case | `composer/templates/cex_instructions.j2` |
-| No contradiction / CVL-expressibility / deduplication / prioritization checks on extracted requirements | `composer/templates/req_extraction_prompt.j2` |
-
-**One gap found but not fixed** (needs a decision from someone who knows the AutoSetup/`pou` dependency, not just an edit): `AUTOPROVE.md`'s documented install command references a `pou` extra that doesn't exist in `pyproject.toml`. See **B7** above for the workaround.
-
-For the full reasoning behind the two template fixes, see [`CEX_AND_REQUIREMENTS_GUIDE.md`](CEX_AND_REQUIREMENTS_GUIDE.md#known-gaps).
 
 ---
 

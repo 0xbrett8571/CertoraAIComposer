@@ -263,11 +263,12 @@ These seven categories cover the vast majority of devastating business-logic exp
 
 ## The 12 Business Logic & Infrastructure Bug Categories
 
-> Inspired by analysis of 50 real-world DeFi attacks totaling $1B+ in losses (arXiv:2507.20175). These bugs
-> are more valuable to find than classic security bugs (which static analyzers already catch), because they
-> require domain reasoning rather than pattern-matching. This 10-category list is this document's own
-> extraction, not a verbatim taxonomy from the cited paper — see `BUSINESS_LOGIC_CORE.md` for the full note
-> on how it relates to the paper's own four-tier root-cause framework.
+> Informed by an analysis of 50 real-world DeFi attacks totaling over $1B in losses (arXiv:2507.20175,
+> "SoK: Root Cause of $1 Billion Loss in Smart Contract Real-World Attacks"). These bugs are more valuable
+> to find than classic security bugs (which static analyzers already catch), because they require domain
+> reasoning rather than pattern-matching. This 12-category list is this document's own extraction, organized
+> for audit-time actionability, rather than a verbatim restatement of the cited paper's four-tier root-cause
+> framework — see `MASTER_AUDIT_GUIDE_V2.md` Part 4 for the full treatment of each category.
 
 ### 1. Asset Conservation
 
