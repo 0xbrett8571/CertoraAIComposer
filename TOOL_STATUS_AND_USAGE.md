@@ -242,7 +242,7 @@ certora-verify
 
 # 6. Use on your project
 cd ~/my-defi-protocol
-certoractl run config.conf -o ./prover_results
+certoraRun config.conf --output_dir ./prover_results
 cex-list ./prover_results
 cex-analyze ./prover_results rule_name --spec ./spec/file.spec
 ```

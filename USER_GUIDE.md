@@ -12,7 +12,7 @@
 4. [How Property Extraction Works](#how-property-extraction-works)
 5. [The CVL Generation Feedback Loop](#the-cvl-generation-feedback-loop)
 6. [The Auditor Mindset: Hunt Impact, Not Bugs](#the-auditor-mindset-hunt-impact-not-bugs)
-7. [The 10 Business Logic Bug Categories](#the-10-business-logic-bug-categories)
+7. [The 12 Business Logic & Infrastructure Bug Categories](#the-12-business-logic--infrastructure-bug-categories)
 8. [Catastrophic Failure Scenarios](#catastrophic-failure-scenarios)
 9. [Working Without AutoSetup](#working-without-autosetup)
 10. [Caching & Resumption](#caching--resumption)
@@ -261,9 +261,13 @@ These seven categories cover the vast majority of devastating business-logic exp
 
 ---
 
-## The 10 Business Logic Bug Categories
+## The 12 Business Logic & Infrastructure Bug Categories
 
-> Based on analysis of $1B+ real-world DeFi exploits. These cause ~80% of major losses and are more valuable than classic security bugs (which static analyzers already catch).
+> Inspired by analysis of 50 real-world DeFi attacks totaling $1B+ in losses (arXiv:2507.20175). These bugs
+> are more valuable to find than classic security bugs (which static analyzers already catch), because they
+> require domain reasoning rather than pattern-matching. This 10-category list is this document's own
+> extraction, not a verbatim taxonomy from the cited paper — see `BUSINESS_LOGIC_CORE.md` for the full note
+> on how it relates to the paper's own four-tier root-cause framework.
 
 ### 1. Asset Conservation
 
@@ -622,6 +626,96 @@ rule pause_not_permanent_lock() {
 ```
 
 **Severity**: HIGH ($2k-$10k). Permanent lockup = total loss for users.
+
+---
+
+### 11. Upgrade & Proxy Safety
+
+**Claim**: Only the authorized upgrade path can change contract logic or reinterpret storage. The
+implementation contract cannot be initialized or hijacked independently of the proxy.
+
+**Design Doc Property**:
+```
+PROPERTY:
+The upgrade function is only callable by the designated,
+time-locked upgrade authority.
+
+PROPERTY:
+The implementation contract's initializers are disabled at
+deployment, so it cannot be initialized directly.
+
+PROPERTY:
+Storage layout (slot, order, type) is identical across every
+deployed implementation version.
+```
+
+**CVL**:
+```cvl
+rule only_authority_can_upgrade(address caller) {
+    env e;
+    require e.msg.sender == caller;
+    require caller != upgradeAuthority();
+    upgradeToAndCall@withrevert(e, _, _);
+    assert lastReverted; // Anyone other than the authority must revert
+}
+
+rule implementation_cannot_be_reinitialized() {
+    env e;
+    // Called directly against the implementation address, not via the proxy
+    initialize@withrevert(e, _);
+    assert lastReverted; // Must already be initialized/disabled
+}
+```
+
+**Severity**: CRITICAL. Historical precedent: Parity multisig library
+self-destruct froze $280M+ permanently; Nomad bridge lost $190M to a
+misconfigured initializer during an upgrade.
+
+---
+
+### 12. Cross-Chain / Bridge Trust
+
+**Claim**: A cross-chain message is only accepted on the destination chain if it was genuinely
+authorized on the source chain, and can never be replayed — on the same chain or across chains.
+*(Skip this category if the contract has no cross-chain component.)*
+
+**Design Doc Property**:
+```
+PROPERTY:
+Each cross-chain message carries a unique identifier (nonce +
+source chain ID) and can never be processed twice.
+
+PROPERTY:
+Message authenticity is verified against real source-chain state
+(light client, merkle proof, or supermajority validator
+signatures) — never trusted from a single relayer.
+
+PROPERTY:
+Changing the trusted validator set or verification root requires
+passing through the same time-locked authority as any other
+upgrade (see Category 11).
+```
+
+**CVL**:
+```cvl
+rule message_cannot_be_replayed(bytes32 messageId) {
+    env e;
+    require isProcessed(messageId);
+    processMessage@withrevert(e, messageId, _);
+    assert lastReverted; // Already-processed messages must be rejected
+}
+
+rule below_threshold_signatures_rejected(uint256 numSigners) {
+    env e;
+    require numSigners < requiredThreshold();
+    verifyAndExecute@withrevert(e, _, numSigners);
+    assert lastReverted; // Must not execute below the trust threshold
+}
+```
+
+**Severity**: CRITICAL. The single largest cumulative DeFi loss category
+historically: Ronin ($625M), Poly Network ($611M), Wormhole ($325M),
+Nomad ($190M).
 
 ---
 

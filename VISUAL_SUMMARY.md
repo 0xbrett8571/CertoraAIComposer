@@ -173,7 +173,7 @@ YOU (DeFi Developer)
 ┌─────────────────────────────────────────────────────────────┐
 │ 9:00 AM - RUN PROVER                                       │
 ├─────────────────────────────────────────────────────────────┤
-│ $ certoractl run config.conf -o ./prover_results           │
+│ $ certoraRun config.conf --output_dir ./prover_results     │
 │ ⏳ Waiting... (5 min to 2 hours)                            │
 │ ☕ Get coffee                                              │
 └─────────────────────────────────────────────────────────────┘
@@ -223,7 +223,7 @@ YOU (DeFi Developer)
 ┌─────────────────────────────────────────────────────────────┐
 │ 2:00 PM - RE-RUN PROVER                                     │
 ├─────────────────────────────────────────────────────────────┤
-│ $ certoractl run config.conf -o ./prover_results_v2        │
+│ $ certoraRun config.conf --output_dir ./prover_results_v2  │
 │ ⏳ Waiting...                                              │
 └─────────────────────────────────────────────────────────────┘
                            ↓
@@ -389,7 +389,7 @@ YOU (DeFi Developer)
 │ 5. RE-VERIFY (Loop back to step 1)                              │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                 │
-│ $ certoractl run config.conf -o ./prover_results_v2             │
+│ $ certoraRun config.conf --output_dir ./prover_results_v2       │
 │         │                                                       │
 │         ↓                                                       │
 │ Check: $ cex-list ./prover_results_v2                           │
@@ -421,7 +421,7 @@ YOU (DeFi Developer)
 
 ### **Ready to Use**
 
-- [ ] `certoractl run config.conf -o ./prover_results`
+- [ ] `certoraRun config.conf --output_dir ./prover_results`
 - [ ] `cex-list ./prover_results`
 - [ ] `cex-analyze ./prover_results rule_name --spec ./spec/file.spec`
 

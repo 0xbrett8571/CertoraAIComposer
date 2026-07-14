@@ -70,7 +70,7 @@ EOF
 
 ### **1. Run Prover**
 ```bash
-certoractl run config.conf -o ./prover_results
+certoraRun config.conf --output_dir ./prover_results
 # Wait for completion (5 min - 2 hours)
 ```
 
@@ -114,7 +114,7 @@ cat analysis.md
 
 ```
 ┌─ MORNING ─────────────────────────┐
-│ 1. certoractl run config.conf    │ (run prover)
+│ 1. certoraRun config.conf         │ (run prover)
 │    # Get coffee ☕ (wait)         │
 └───────────────────────────────────┘
             ↓
@@ -138,7 +138,7 @@ cat analysis.md
 └───────────────────────────────────┘
             ↓
 ┌─ AFTERNOON ───────────────────────┐
-│ 6. certoractl run config.conf     │ (re-verify)
+│ 6. certoraRun config.conf         │ (re-verify)
 │ 7. cex-list ./prover_results      │ (check if fixed)
 │    # If still VIOLATED, go to step 3
 └───────────────────────────────────┘
@@ -264,7 +264,7 @@ echo "API Key: ${ANTHROPIC_API_KEY:0:10}..." # First 10 chars
 # Everything in 3 commands:
 
 # 1. Run prover
-certoractl run config.conf -o ./prover_results
+certoraRun config.conf --output_dir ./prover_results
 
 # 2. See what failed
 cex-list ./prover_results | grep VIOLATED
@@ -294,7 +294,7 @@ iteration=0
 while [ $(cex-list ./prover_results_$iteration | grep VIOLATED | wc -l) -gt 0 ]; do
     iteration=$((iteration + 1))
     echo "Iteration $iteration..."
-    certoractl run config.conf -o ./prover_results_$iteration
+    certoraRun config.conf --output_dir ./prover_results_$iteration
 done
 echo "✅ All verified in $iteration iterations!"
 ```

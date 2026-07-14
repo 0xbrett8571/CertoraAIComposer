@@ -426,7 +426,7 @@ cd ~/projects/my-defi-protocol
 source ~/.certora-config
 
 # Run Certora (results download to ./prover_results)
-certoractl run config.conf -o ./prover_results
+certoraRun config.conf --output_dir ./prover_results
 # Takes 5 minutes to 2 hours depending on complexity
 
 # Meanwhile, grab coffee ☕
@@ -477,7 +477,7 @@ vim contracts/Token.sol
 ### **Afternoon: Re-run Prover to Verify**
 
 ```bash
-certoractl run config.conf -o ./prover_results_v2
+certoraRun config.conf --output_dir ./prover_results_v2
 
 # List rules again
 cex-list ./prover_results_v2
@@ -589,7 +589,7 @@ while [ $ITERATION -lt $MAX_ITERATIONS ]; do
     
     # Run prover
     echo "🚀 Running Certora Prover..."
-    certoractl run config.conf -o ./prover_results_iter$ITERATION
+    certoraRun config.conf --output_dir ./prover_results_iter$ITERATION
     
     # Check results
     FAILED=$($CERTORA_TOOL_BIN $CEX_TOOL list "./prover_results_iter$ITERATION" | \
@@ -644,10 +644,10 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
       
@@ -662,7 +662,7 @@ jobs:
       
       - name: Run Certora Prover
         run: |
-          certoractl run config.conf -o ./prover_results
+          certoraRun config.conf --output_dir ./prover_results
       
       - name: Check verification results
         run: |
@@ -687,7 +687,7 @@ jobs:
       
       - name: Upload analysis artifacts
         if: failure()
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: verification-analysis
           path: analysis_*.md
@@ -782,7 +782,7 @@ Once global setup is done, you can run this on ANY project:
 
 ```bash
 # Works on any project with config.conf
-certoractl run config.conf -o ./prover_results
+certoraRun config.conf --output_dir ./prover_results
 
 # Extract and analyze
 cex-list ./prover_results
@@ -810,7 +810,7 @@ cex-analyze ./prover_results rule_name --spec ./spec/file.spec
 
 1. Follow the "One-Time Global Setup" (15 min)
 2. Create `.certora-project` in your project (2 min)
-3. Run your first: `certoractl run config.conf`
+3. Run your first: `certoraRun config.conf`
 4. Extract CEX: `cex-list ./prover_results`
 5. Analyze: `cex-analyze ./prover_results rule_name`
 

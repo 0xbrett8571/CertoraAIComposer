@@ -190,7 +190,7 @@ PROPERTY: Total liabilities must never exceed total assets.
 CLAIM: Share value cannot be artificially inflated.
 PROPERTY: External transfers must not artificially inflate share value.
 
-[Continue for all 10 categories — see USER_GUIDE.md]
+[Continue for all 12 categories — see USER_GUIDE.md]
 
 ## 5. Edge Cases & State Transitions
 - Boundary conditions: What if reserve is 0? Deposit is 1 wei?
@@ -789,6 +789,54 @@ Standardized per Immunefi, Sherlock, and HackenProof:
 | 8 | Accounting Sync | CRITICAL | `assert vaultBalance >= accountedAssets` |
 | 9 | Reward Integrity | HIGH | `assert earned2 == 0` |
 | 10 | Fund Lockup | HIGH | `emergencyWithdraw@withrevert(); assert !lastReverted` |
+| 11 | Upgrade & Proxy Safety | CRITICAL | `upgradeToAndCall@withrevert(e,_,_); assert lastReverted` (non-authority) |
+| 12 | Cross-Chain / Bridge Trust | CRITICAL | `processMessage@withrevert(e, usedId, _); assert lastReverted` |
+
+See `BUSINESS_LOGIC_CORE.md` for the full Claim/Property/CVL treatment of each category, and
+`MASTER_AUDIT_GUIDE_V2.md` Part 4 for the audit-workflow integration.
+
+---
+
+## Recommended Security Primitives
+
+Diagnosing a bug category is only half the job — this maps each category to the audited,
+battle-tested primitive that prevents it, so findings translate directly into safe code rather
+than a bespoke re-implementation (which is itself a common source of *new* vulnerabilities).
+
+| Category | Recommended primitive |
+|---|---|
+| Access Control (#6) | OpenZeppelin `AccessControl` / `Ownable2Step` (prefer two-step ownership transfer over single-step `Ownable`) |
+| Reentrancy (classic, not separately numbered above) | OpenZeppelin `ReentrancyGuard`; Solmate's `ReentrancyGuard` for a gas-optimized equivalent |
+| Token transfers / non-standard ERC20s | OpenZeppelin `SafeERC20` (handles missing return values, reverts consistently) |
+| Solvency / Accounting Sync (#4, #8) | OpenZeppelin `ERC4626` as a reference vault-accounting implementation rather than hand-rolled share math |
+| Upgrade & Proxy Safety (#11) | OpenZeppelin `UUPSUpgradeable` / `TransparentUpgradeableProxy`, with `_disableInitializers()` called in the implementation constructor; OpenZeppelin Upgrades plugin (or equivalent storage-layout-diff tooling) run before every upgrade |
+| Cross-Chain / Bridge Trust (#12) | Prefer canonical, audited bridge infrastructure (a rollup's native bridge, LayerZero, Axelar, Wormhole's guardian design) over a hand-rolled trusted-relayer bridge wherever the protocol's design allows it |
+| Signature-based authorization | OpenZeppelin `ECDSA` + `EIP712` (domain-separated signatures with an explicit nonce, to prevent cross-contract and replay attacks) |
+| Pausability / Fund Lockup (#10) | OpenZeppelin `Pausable`, paired with an emergency-withdrawal path that explicitly remains callable while paused (see Category 10's CVL rule) |
+
+This list is deliberately not exhaustive — it's the set of primitives that most directly map to
+the 12 categories above, not a general Solidity library survey.
+
+---
+
+## Testing & Tooling Complement
+
+This tool performs SMT-backed formal verification via the Certora Prover — it proves properties
+hold for *all* inputs, which is a different and complementary guarantee to what dynamic testing
+tools provide. A production security process typically layers several of these together, since
+they catch different bug classes and have different false-negative profiles:
+
+| Tool class | Example tools | What it catches that formal verification (as configured here) may not |
+|---|---|---|
+| Static analysis | Slither, MythX | Fast, cheap first-pass pattern detection across an entire codebase before investing in property-writing |
+| Fuzz testing | Foundry (`forge test --fuzz`), Echidna | Concrete counterexamples without needing a hand-written CVL rule first; good at finding edge cases in arithmetic and boundary conditions |
+| Invariant testing | Foundry invariant tests, Echidna | Stateful, multi-call sequences explored via random exploration rather than exhaustive proof — a useful cross-check against the properties formalized here |
+| Symbolic execution | Manticore, `hevm symbolic` | Path-exhaustive exploration of a single function's behavior, complementary to whole-protocol CVL invariants |
+
+None of these substitute for the others. A property that verifies here has a mathematical
+guarantee that fuzzing can't offer (fuzzing can only fail to find a counterexample, never prove
+its absence); conversely, fuzzing and static analysis catch classes of implementation-level bugs
+(e.g. straightforward off-by-one errors) faster and cheaper than writing a CVL rule for them.
 
 ---
 

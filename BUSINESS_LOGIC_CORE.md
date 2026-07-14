@@ -2,7 +2,17 @@
 ## Replaces Parts 3, 4, 6 (Prompt A), and 13
 
 > These sections replace the corresponding parts in MASTER_AUDIT_GUIDE_V2.md.
-> Foundation: arXiv:2507.20175 — analysis of $1B+ real-world DeFi losses.
+> Inspired by arXiv:2507.20175 ("SoK: Root Cause of $1 Billion Loss in Smart Contract Real-World Attacks"),
+> which analyzed 50 severe real-world attacks (2022–2025) totaling over $1.09B in losses.
+>
+> **Note on the relationship to the cited paper**: the paper's own root-cause framework is four tiers —
+> (1) protocol logic design, (2) lifecycle & governance, (3) external dependencies, (4) classic vulnerabilities
+> — built from a catalog of 24 active and 5 deprecated vulnerability types. The 12 categories below are this
+> document's own extension, organized for audit-time actionability rather than a direct restatement of the
+> paper's taxonomy. They fall predominantly under the paper's first tier (protocol logic design). Treat the
+> paper as motivating evidence that this class of bug is underweighted by classical tooling, not as the source
+> of this specific 10-item list.
+>
 > Classical bugs (reentrancy, overflow) are table stakes. Business logic is the differentiator.
 >
 > **Grounded in AIComposer's actual system prompts**: The property categories
@@ -24,25 +34,50 @@
 ### Why Classical Bugs Are No Longer Enough
 
 Modern automated tools (Slither, MythX, Echidna) catch most classical bugs:
-- Reentrancy
-- Integer overflow/underflow
-- Unchecked return values
-- Basic access control gaps
+- Reentrancy (SWC-107)
+- Integer overflow/underflow (SWC-101 — largely mitigated by Solidity 0.8's built-in checked arithmetic, but still relevant in `unchecked {}` blocks and pre-0.8 code)
+- Unchecked return values (SWC-104)
+- Basic access control gaps (SWC-105, SWC-106)
 
 These are valuable but increasingly expected. They are found by automated
 scans before the audit even begins. Bug bounty programs reward them at
 Medium to Low severity in most cases.
 
+Two classical categories are worth calling out explicitly, because they're *not* reliably
+caught by static analysis or naive fuzzing the way the four above are — they require
+understanding external-call gas semantics and call-site context, which puts them closer to
+the business-logic reasoning this document focuses on than to a simple pattern match:
+
+- **Insufficient gas griefing (SWC-126)**: a relayer or meta-transaction forwarder is given
+  enough gas to *appear* to succeed but not enough for the inner call to complete, causing a
+  silent partial failure the caller can't easily detect. Relevant to any contract accepting
+  a caller-supplied gas amount for a sub-call (e.g., ERC-2771-style meta-transactions,
+  multisend/batch-execution contracts). Related: SWC-113 (DoS with Failed Call — an external
+  call reverting, deliberately or not, blocks a loop or shared code path) and SWC-128 (DoS
+  With Block Gas Limit — an unbounded loop that eventually can't fit in a block).
+- **Missing signature-replay protection (SWC-121)**: an off-chain-signed message (a permit,
+  a meta-transaction, a bridge attestation) is accepted more than once, or is valid across a
+  contract/chain it wasn't intended for, because the signed payload doesn't include a nonce
+  and a domain separator (chain ID + contract address, per EIP-712). This overlaps directly
+  with Category 12 (Cross-Chain / Bridge Trust) below, where signature replay across chains
+  is the dominant failure mode.
+
+*(A note on SWC as a reference: the SWC Registry's own maintainers flag that it hasn't been
+substantively updated since 2020 and may be incomplete — for currently-maintained guidance,
+they point to the EEA EthTrust Security Levels specification and the Smart Contract Security
+Verification Standard (SCSVS). SWC IDs above are cited as a widely-recognized common
+vocabulary for cross-referencing findings, not as a claim that the registry itself is current.)*
+
 ### Where the Real Money Is
 
-Research analyzing over $1B of real-world DeFi losses (arXiv:2507.20175)
-found that the majority of catastrophic exploits traced back to:
+Research analyzing 50 severe real-world attacks totaling over $1.09B in losses (arXiv:2507.20175)
+found that a large share of catastrophic exploits traced back to:
 
 - Protocol logic design flaws
 - Broken invariants that "bug-free" code violated
 - Business logic that worked in isolation but failed under composition
 
-The Euler Finance exploit ($196M) is the canonical example. The code had
+The Euler Finance exploit ($197M, per the cited paper) is the canonical example. The code had
 no reentrancy, no overflow, no oracle manipulation. The access control was
 correct. But the solvency invariant could be broken through a specific
 sequence of valid operations. Business logic. Not a bug. A broken guarantee.
@@ -123,7 +158,7 @@ Established: $5k–$50k+ per finding on complex protocols
 
 ---
 
-## PART 4 (UPDATED): THE 10 BUSINESS LOGIC BUG CATEGORIES
+## PART 4 (UPDATED): THE 12 BUSINESS LOGIC & INFRASTRUCTURE BUG CATEGORIES
 ### CLAIM → PROPERTY: a useful convention for design_doc.md, not a required format
 
 These are not theoretical. Each category maps to real exploits that cost protocols millions.
@@ -459,6 +494,120 @@ withdrawal paths fail simultaneously?"
 
 ---
 
+### Category 11: Upgrade & Proxy Safety
+
+**The Core Claim:**
+*(SWC-106 / SWC-118-adjacent; caused the Parity multisig freeze — $280M+ permanently
+locked when a library contract was accidentally left uninitialized and self-destructed;
+caused the Nomad bridge's $190M loss via a misconfigured initializer during an upgrade)*
+```
+Only authorized parties can trigger an upgrade.
+The implementation contract cannot be independently initialized or hijacked.
+Storage layout is preserved across upgrades — no field ever changes type or slot.
+An upgrade cannot silently change the meaning of already-stored user balances.
+```
+
+**Properties to include in design_doc.md:**
+```
+PROPERTY:
+The upgrade function must only be callable by the designated
+upgrade authority (timelocked multisig, DAO governance, etc.),
+never by an arbitrary caller.
+
+PROPERTY:
+The logic/implementation contract must have its initializers
+disabled at deployment (e.g., via _disableInitializers() or
+equivalent), so it cannot be initialized and taken over directly,
+bypassing the proxy.
+
+PROPERTY:
+Storage variables must occupy the same slot, in the same order,
+with the same type, across every implementation version ever
+deployed. A new version must only ever append new variables,
+never reorder, retype, or remove existing ones (respect any
+storage-gap convention already in use).
+
+PROPERTY:
+An upgrade must not change the semantic meaning of existing
+stored values (e.g., reinterpreting a balance field as a
+share-count field) without an explicit, audited migration step.
+```
+
+**The Question to Ask:**
+"Who can call the upgrade function, and is that authority itself
+time-locked or otherwise resistant to a single compromised key?
+Can the *implementation* contract be initialized directly, without
+going through the proxy? If I diff this version's storage layout
+against the last deployed version, does anything change type,
+order, or meaning?"
+
+**Recommended primitives:** OpenZeppelin's `UUPSUpgradeable` /
+`TransparentUpgradeableProxy` (with `_disableInitializers()` called
+in the implementation's constructor) rather than a hand-rolled proxy;
+OpenZeppelin Upgrades plugin or `storage-layout`-style tooling to
+diff storage layout between versions before every upgrade.
+
+---
+
+### Category 12: Cross-Chain / Bridge Trust
+
+**The Core Claim:**
+*(The single largest loss category in DeFi history by cumulative $ — Ronin $625M,
+Poly Network $611M, Wormhole $325M, Nomad $190M)*
+```
+A message can only be considered valid on the destination chain if it was
+genuinely authorized on the source chain.
+A message cannot be replayed — neither on the same chain twice, nor
+replayed identically across two different destination chains.
+The set of parties trusted to attest to source-chain state is itself
+protected against compromise of a subset of its members.
+```
+
+**Properties to include in design_doc.md:**
+```
+PROPERTY:
+Each cross-chain message must be uniquely identified (e.g., by a
+monotonically increasing nonce plus source-chain ID) such that it
+can never be accepted twice on any destination chain.
+
+PROPERTY:
+Message authenticity must be verified against the actual
+source-chain state (light client, merkle proof, or a validator
+set requiring a supermajority signature threshold) — never
+trusted purely on the say-so of a single relayer or a minority
+of validators.
+
+PROPERTY:
+Compromising fewer than [threshold] of the trusted validator/relayer
+set must be insufficient to forge a valid message.
+
+PROPERTY:
+Any admin function that can change the trusted validator set,
+the trusted root, or the message-verification logic must be
+time-locked and must not be reachable via a single uninitialized
+or misconfigured call (see Category 11 — this is exactly the
+class of bug that caused the Nomad bridge loss).
+```
+
+**The Question to Ask:**
+"If I control a bare majority (or, depending on the design, even
+just one) of the parties who attest to what happened on the source
+chain, can I mint/release funds on the destination chain for an
+event that never actually happened? Is the message-verification
+root itself protected by the same upgrade-safety properties as
+Category 11?"
+
+**Recommended primitives:** Prefer canonical, audited bridge
+infrastructure (LayerZero, Axelar, Wormhole's own guardian-set
+design, or a rollup's native canonical bridge) over a hand-rolled
+trusted-relayer bridge wherever the protocol's design allows it;
+where a custom bridge is unavoidable, treat its validator-set and
+message-verification logic as the single highest-priority target
+for both formal verification and external audit.
+
+---
+
+
 ## THE AUDITOR MINDSET (Add to Every Design Doc Session)
 
 Before writing any property, run this mental filter:
@@ -493,7 +642,7 @@ worth formalizing and verifying with Certora.
 
 ---
 
-## PART 6, PROMPT A (UPDATED): 10-CATEGORY BUSINESS LOGIC ANALYSIS
+## PART 6, PROMPT A (UPDATED): 12-CATEGORY BUSINESS LOGIC & INFRASTRUCTURE ANALYSIS
 
 *Use this exact prompt with GitHub Copilot Pro or Claude on any contract.*
 *This replaces the previous generic version.*
@@ -510,7 +659,7 @@ protocol shutdown.
 CONTRACT CODE:
 [PASTE FULL CONTRACT]
 
-ANALYZE EACH OF THESE 10 CATEGORIES:
+ANALYZE EACH OF THESE 12 CATEGORIES (skip category 12 if no cross-chain component exists):
 
 ────────────────────────────────────────────────────────
 1. ASSET CONSERVATION
@@ -613,6 +762,38 @@ ANALYZE EACH OF THESE 10 CATEGORIES:
     - If the contract is paused indefinitely, can users withdraw?
     - Is there an emergency path? Is it always accessible?
     - Can both normal AND emergency paths fail simultaneously?
+
+────────────────────────────────────────────────────────
+11. UPGRADE & PROXY SAFETY
+    Claim: Only the authorized upgrade path can change logic or
+    storage semantics; nothing else can.
+
+    Check:
+    - Who can call the upgrade function? Is that authority
+      time-locked or a single key?
+    - Can the implementation contract be initialized directly,
+      bypassing the proxy?
+    - Does the storage layout match the previous version exactly
+      (same slots, same types, same order)?
+    - Could an upgrade silently reinterpret existing stored values?
+
+────────────────────────────────────────────────────────
+12. CROSS-CHAIN / BRIDGE TRUST
+    Claim: A message is only valid on the destination chain if it
+    was genuinely authorized on the source chain, and can never be
+    replayed.
+
+    Check: (skip this category if the contract has no cross-chain
+    component)
+    - Is each message uniquely identified (nonce + source chain ID)
+      so it cannot be replayed?
+    - Is authenticity checked against real source-chain state
+      (light client / merkle proof / supermajority signatures),
+      or trusted on a single relayer's say-so?
+    - How many compromised validators/relayers would it take to
+      forge a valid message?
+    - Is the function that changes the trusted validator set or
+      verification root itself time-locked (see Category 11)?
 
 ────────────────────────────────────────────────────────
 
@@ -808,5 +989,5 @@ Priority: 1 (Asset Conservation — reserved funds variant)
 ---
 
 *Business Logic Core — June 2026*
-*Foundation: arXiv:2507.20175*
+*Inspired by arXiv:2507.20175 — see note on the header's relationship to this document's own taxonomy*
 *These sections replace Parts 3, 4, 6 Prompt A, and 13 of MASTER_AUDIT_GUIDE_V2.md*

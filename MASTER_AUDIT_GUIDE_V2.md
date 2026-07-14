@@ -12,7 +12,7 @@
 1.  The Correct Order — How Everything Connects
 2.  Command Reference — 4 Tools, Not Interchangeable
 3.  Impact-Driven Paradigm + Severity Framework
-4.  The 10 High-Value Business Logic Bug Categories
+4.  The 12 High-Value Business Logic & Infrastructure Bug Categories
 5.  Phase A: 7-Step Property Extraction (GitHub Copilot Pro Prompts)
 6.  Phase A: Business Logic Manual Analysis (Copilot Prompts)
 7.  Phase B: AIComposer Pipeline (After AutoSetup)
@@ -170,9 +170,12 @@ documented claims, and don't invent properties just to fill space.
 
 ---
 
-## PART 4: THE 10 HIGH-VALUE BUSINESS LOGIC CATEGORIES
+## PART 4: THE 12 HIGH-VALUE BUSINESS LOGIC & INFRASTRUCTURE CATEGORIES
 
-> Note: Previous docs incorrectly said "8 categories" in 14 places. There are 10.
+> Note: Previous docs incorrectly said "8 categories" in 14 places, then "10 categories."
+> There are 12 — categories 11 and 12 (upgrade/proxy safety and cross-chain/bridge trust)
+> were added after a production-readiness audit found bridges and upgradeability were the
+> two largest real-world DeFi loss categories with zero coverage in this guide.
 > Authoritative names from BUSINESS_LOGIC_CORE.md — use these exact names in design_doc.md.
 
 | # | Category | Attack Type | Severity |
@@ -187,6 +190,8 @@ documented claims, and don't invent properties just to fill space.
 | 8 | Accounting Synchronization | Desync multi-contract accounting | HIGH/CRITICAL |
 | 9 | Reward Integrity | Double-claim rewards | HIGH |
 | 10 | Funds Cannot Become Permanently Locked | Permanently lock user funds | HIGH/CRITICAL |
+| 11 | Upgrade & Proxy Safety | Hijack implementation or corrupt storage on upgrade | CRITICAL |
+| 12 | Cross-Chain / Bridge Trust | Forge or replay a cross-chain message | CRITICAL |
 
 ### What to Ask for Each Category
 
@@ -201,6 +206,8 @@ documented claims, and don't invent properties just to fill space.
 8. Accounting Sync:        Are there two variables tracking the same value that could diverge?
 9. Reward Integrity:       What happens if claimRewards() is called twice in the same block?
 10. Fund Lockup:           If the contract is paused, can users STILL access their funds?
+11. Upgrade & Proxy:       Who can trigger an upgrade, and can the implementation be initialized directly?
+12. Cross-Chain Trust:     How many compromised validators/relayers would it take to forge a message?
 ```
 
 ---
@@ -401,7 +408,7 @@ Use this exact 9-section structure:
 5. Critical Function Specifications (pre/postconditions from Step 5)
 6. High-Level Properties for Verification (6–10 most important)
 7. Edge Cases and State Transitions
-8. Business Logic Concerns (all 10 categories addressed for this protocol)
+8. Business Logic Concerns (all 12 categories addressed for this protocol — skip category 12 if no cross-chain component)
 9. Assumptions
 
 Here is my content to organize:
@@ -429,7 +436,7 @@ Example of SPECIFIC (good — tied to THIS protocol's actual logic):
 **Self-Review Questions:**
 - Does every property tie to a documented claim? (no invented properties)
 - Is every property specific? (not "fees work correctly")
-- Are all 10 business logic categories addressed?
+- Are all 12 business logic & infrastructure categories addressed?
 - Are edge cases covered? (zero amounts, empty states, pause states)
 - Does the doc contain ANY code? (remove it if so)
 - Would a judge accept each finding based on this documentation?
@@ -445,7 +452,7 @@ Check for these specific issues:
 1. SPECIFICITY: Are properties specific to this protocol or are they generic?
    Flag any property that could apply to ANY protocol unchanged.
 
-2. COMPLETENESS: Are all 10 business logic categories addressed?
+2. COMPLETENESS: Are all 12 business logic & infrastructure categories addressed?
    (asset conservation, double withdrawal, reserved funds, solvency,
    share price integrity, access control, state machine correctness,
    accounting synchronization, reward integrity, fund lockup prevention)
@@ -1498,13 +1505,13 @@ docker ps    # Should work without sudo
 - [ ] Step 4: YOU converted each claim to a formal property (plain English)
 - [ ] Step 5: Pre/postconditions defined for 3+ critical functions
 - [ ] Step 6: design_doc.md drafted — ZERO code in it
-- [ ] Step 7: Copilot reviewed doc — all 10 categories addressed
+- [ ] Step 7: Copilot reviewed doc — all 12 categories addressed (categories 11-12: upgrade/proxy safety and cross-chain/bridge trust — see BUSINESS_LOGIC_CORE.md)
 
 ### Before Running AIComposer
 
 - [ ] design_doc.md is 2000+ words
 - [ ] design_doc.md has NO CVL or Solidity code
-- [ ] All 10 business logic categories have entries
+- [ ] All 12 business logic & infrastructure categories have entries (skip category 12 if no cross-chain component)
 - [ ] Edge cases listed (zero, max, empty, paused states)
 - [ ] ANTHROPIC_API_KEY set in WSL
 - [ ] CERTORAKEY set in WSL
@@ -1514,7 +1521,7 @@ docker ps    # Should work without sudo
 
 ### After Getting Prover Results
 
-- [ ] All FAILED rules investigated with cex_analyzer
+- [ ] All VIOLATED rules investigated with cex_analyzer (the Prover's actual status string is `VIOLATED`, not `FAILED` — see Prover Results Reference)
 - [ ] Each failure verified as real (not a proof artifact)
 - [ ] Finding classified as Vulnerability / Design Flaw / Spec Violation / Correctness
 - [ ] PoC test written and passing (using Part 11 template)
@@ -1526,6 +1533,55 @@ docker ps    # Should work without sudo
 
 ---
 
+## PART 17: POST-DEPLOYMENT — MONITORING, INCIDENT RESPONSE & SUPPLY CHAIN
+
+A verified spec and a clean audit report are necessary, not sufficient, for production safety.
+Everything in this Part happens *after* deployment, and is commonly under-specified relative to
+the pre-deployment audit workflow above — this section is intentionally short and practical
+rather than exhaustive, since each of these is a discipline in its own right.
+
+### Monitoring
+
+- **Alert on the properties you just verified.** Every CVL invariant you proved pre-deployment
+  is also a candidate for a post-deployment monitor — if `totalLiabilities <= totalAssets` was
+  worth proving, it's worth continuously checking on-chain too (a proof covers the code as
+  written; it does not cover a future upgrade, a misconfiguration, or an assumption about an
+  external contract that later stops holding).
+- Tools in this space (evaluate independently; not an endorsement): Forta (decentralized
+  detection bots), OpenZeppelin Defender (monitoring + automated response actions), Tenderly
+  (alerting + simulation). At minimum, monitor: large/unusual withdrawals, admin-function calls,
+  upgrade events, and any oracle price deviating sharply from a reference source.
+
+### Incident Response
+
+- **Pause authority should be pre-delegated and rehearsed, not improvised.** Category 6
+  (Access Control) properties should already guarantee *who* can pause; make sure that party
+  has a tested, fast path to actually doing so (a multisig with an unfamiliar UI at 3am is not
+  a fast path).
+- **Have a drafted (not written-from-scratch-during-the-incident) communication template** —
+  what gets disclosed, when, and through which channel, decided calmly in advance rather than
+  under pressure.
+- **Postmortem structure**: what was verified vs. not, why the verified properties didn't
+  prevent this incident (new code path? compromised key? external dependency change? a gap in
+  the design doc that never became a CVL rule?), and — concretely — what new property or
+  category should be added to `design_doc.md` as a result. Feed real incidents back into the
+  audit process that produced this document.
+
+### Supply Chain
+
+- **Pin dependencies to exact versions/commits, not ranges.** This repository's own
+  `pyproject.toml` pins the `graphcore` dependency to an exact git commit SHA rather than a
+  branch or tag — apply the same discipline to your own Solidity dependencies (OpenZeppelin,
+  Solmate, etc.) and npm/Foundry lockfiles.
+- **Prefer reproducible builds.** Verify that the deployed bytecode matches the audited source
+  (Etherscan/Sourcify verification, or a documented deterministic-build process) — an audit of
+  source code that doesn't match what's actually deployed provides no real guarantee.
+- **Treat your build toolchain as part of the attack surface.** A compromised compiler,
+  dependency, or CI runner can introduce a vulnerability that source-level audit and formal
+  verification will never see, because they never see the actual build step.
+
+---
+
 *Master Audit Guide V2 — Corrected and Comprehensive*
 *Combines all 18 items from conversation + 5 valuable items from uploaded docs*
-*16 Parts covering the complete end-to-end workflow*
+*17 Parts covering the complete end-to-end workflow, including post-deployment*
